@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 244 247 251;
+  --foreground: 17 24 39;
+  --muted: 99 115 139;
+  --surface: 255 255 255;
+  --surface-raised: 248 250 252;
+  --border: 219 227 237;
+  --accent: 14 116 144;
+  --accent-strong: 12 87 108;
+  --accent-soft: 224 242 254;
+  --danger: 190 24 93;
+  color-scheme: light;
+}
+
+.dark {
+  --background: 10 16 27;
+  --foreground: 240 246 252;
+  --muted: 148 163 184;
+  --surface: 17 27 43;
+  --surface-raised: 22 34 53;
+  --border: 46 61 82;
+  --accent: 103 232 249;
+  --accent-strong: 165 243 252;
+  --accent-soft: 20 47 63;
+  --danger: 251 113 133;
+  color-scheme: dark;
+}
+
+* {
+  border-color: rgb(var(--border));
+}
+
+html {
+  min-width: 320px;
+  background: rgb(var(--background));
+}
+
+body {
+  min-height: 100vh;
+  background: rgb(var(--background));
+  color: rgb(var(--foreground));
+  font-family: Arial, Helvetica, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgb(var(--accent-soft));
+  color: rgb(var(--foreground));
+}
+
+@layer utilities {
+  .surface {
+    background: rgb(var(--surface));
+  }
+
+  .surface-raised {
+    background: rgb(var(--surface-raised));
+  }
+
+  .text-muted {
+    color: rgb(var(--muted));
+  }
+
+  .text-accent {
+    color: rgb(var(--accent));
+  }
+
+  .bg-accent {
+    background: rgb(var(--accent));
+  }
+
+  .bg-accent-soft {
+    background: rgb(var(--accent-soft));
+  }
+
+  .ring-accent {
+    --tw-ring-color: rgb(var(--accent));
+  }
+}

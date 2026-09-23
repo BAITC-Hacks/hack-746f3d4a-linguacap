@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Local ASR service runtime files and model weights
+services/asr/.venv/
+services/asr/.env
+services/asr/models/*
+!services/asr/models/.gitkeep
+services/asr/runtime/
+
+# deployment and local tooling
+.vercel/
+.sites-runtime/
+
+# Meeting recordings and source documents (not for publication)
+ТЗ/
+
+# logs and operating-system files
+*.log
+*.tsbuildinfo
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# editor files
+.idea/
+.vscode/
+*.swp

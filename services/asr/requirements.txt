@@ -1,0 +1,10 @@
+# Runtime and test dependencies for the Stage 1 service. Keep these pinned so a
+# demonstration environment can be reproduced without resolving new releases.
+fastapi==0.115.12
+huggingface_hub==0.30.2
+httpx==0.28.1
+numpy==2.3.0
+pytest==8.3.5
+python-multipart==0.0.20
+torch==2.10.0
+uvicorn[standard]==0.34.0
