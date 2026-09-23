@@ -17,7 +17,7 @@ class ProtocolExportError(RuntimeError):
 
 
 _DOCUMENT_FONT = "Verdana"
-_PDF_FONT_NAME = "HackAlemUnicode"
+_PDF_FONT_NAME = "TuyinUnicode"
 _PDF_FONT_CANDIDATES = (
     Path("/System/Library/Fonts/Supplemental/Verdana.ttf"),
     Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
@@ -130,8 +130,8 @@ def _create_docx(result: TranscriptionResult, protocol: MeetingProtocol, *, gene
         document.add_paragraph("Явно сформулированных поручений в транскрипте не найдено.")
 
     properties = document.core_properties
-    properties.author = "HackAlem AI"
-    properties.last_modified_by = "HackAlem AI"
+    properties.author = "Tuyin"
+    properties.last_modified_by = "Tuyin"
     properties.title = "Протокол совещания"
     stream = BytesIO()
     document.save(stream)
@@ -166,7 +166,7 @@ def _create_pdf(result: TranscriptionResult, protocol: MeetingProtocol, *, gener
         topMargin=inch,
         bottomMargin=inch,
         title="Протокол совещания",
-        author="HackAlem AI",
+        author="Tuyin",
     )
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("ProtocolTitle", parent=styles["Title"], fontName=_PDF_FONT_NAME, fontSize=24, leading=29, alignment=TA_CENTER, textColor=colors.black, spaceAfter=14)

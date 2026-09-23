@@ -95,7 +95,7 @@ def create_app(
     """Build an app instance; injectable settings keep tests isolated."""
     configured_settings = settings or get_settings()
     app = FastAPI(
-        title="HackAlem Local ASR Service",
+        title="Tuyin Local ASR Service",
         version="0.1.0",
         description="Local-only speech-processing service. No audio leaves the host.",
     )

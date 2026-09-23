@@ -26,7 +26,8 @@ type JobResponse = {
 
 const ACCEPTED_EXTENSIONS = [".mp3", ".wav", ".m4a", ".mp4"];
 const MAX_UPLOAD_BYTES = 1_073_741_824;
-const LAST_JOB_STORAGE_KEY = "hackalem:last-local-job-id";
+const LAST_JOB_STORAGE_KEY = "tuyin:last-local-job-id";
+const LEGACY_JOB_STORAGE_KEYS = ["majilis:last-local-job-id", "hackalem:last-local-job-id"];
 
 function isAccepted(file: File) {
   return ACCEPTED_EXTENSIONS.some((extension) => file.name.toLowerCase().endsWith(extension));
@@ -122,8 +123,15 @@ export function RecordingUpload() {
   }, [jobId]);
 
   useEffect(() => {
-    const savedJobId = window.localStorage.getItem(LAST_JOB_STORAGE_KEY);
+    const storageKey = [LAST_JOB_STORAGE_KEY, ...LEGACY_JOB_STORAGE_KEYS]
+      .find((key) => isJobId(window.localStorage.getItem(key)));
+    if (!storageKey) return;
+    const savedJobId = window.localStorage.getItem(storageKey);
     if (!isJobId(savedJobId)) return;
+    if (storageKey !== LAST_JOB_STORAGE_KEY) {
+      window.localStorage.setItem(LAST_JOB_STORAGE_KEY, savedJobId);
+      window.localStorage.removeItem(storageKey);
+    }
     let current = true;
     const restore = async () => {
       try {

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "HackAlem AI — локальное автопротоколирование",
+  title: "Tuyin — локальное автопротоколирование",
   description: "Локальная система подготовки протоколов совещаний.",
   icons: {
     icon: "/favicon.svg",

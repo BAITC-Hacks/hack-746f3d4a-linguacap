@@ -14,12 +14,12 @@ export default function HomePage() {
     <main className="app-shell min-h-screen">
       <div className="mx-auto max-w-[1280px] px-5 pb-16 sm:px-8 lg:px-12">
         <header className="flex min-h-20 items-center justify-between gap-4 border-b border-[rgb(var(--border))]">
-          <div className="flex items-center gap-3" aria-label="HackAlem AI">
+          <div className="flex items-center gap-3" aria-label="Tuyin">
             <span className="brand-mark flex h-9 w-9 items-center justify-center rounded-xl" aria-hidden="true">
               <AudioLines className="h-5 w-5" strokeWidth={2.2} />
             </span>
             <div className="leading-tight">
-              <span className="block text-[15px] font-semibold tracking-[-0.025em]">HackAlem</span>
+              <span className="block text-[15px] font-semibold tracking-[-0.025em]">Tuyin</span>
               <span className="block text-[10px] font-medium uppercase tracking-[0.18em] text-muted">AI протокол</span>
             </div>
           </div>
@@ -75,7 +75,7 @@ export default function HomePage() {
         </div>
 
         <footer className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-5 text-xs text-muted">
-          <span>HackAlem AI</span>
+          <span>Tuyin</span>
           <span>Ваши записи и результаты хранятся локально</span>
         </footer>
       </div>
