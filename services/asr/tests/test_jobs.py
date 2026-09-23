@@ -119,6 +119,11 @@ def test_transcription_api_exposes_status_result_and_deletion(tmp_path: Path):
 
         status = client.get(f"/jobs/{job_id}")
         assert status.json()["status"] == "completed"
+        assert status.json()["stage"] == "completed"
+        assert status.json()["progress_percent"] == 100
+        assert status.json()["events"][0]["stage"] == "queued"
+        assert {event["stage"] for event in status.json()["events"]} >= {"preparing", "diarizing", "transcribing", "completed"}
+        assert all("тестовая расшифровка" not in event["message"] for event in status.json()["events"])
         result = client.get(f"/jobs/{job_id}/result")
         assert result.status_code == 200
         assert result.json()["segments"][0]["text"] == "тестовая расшифровка"

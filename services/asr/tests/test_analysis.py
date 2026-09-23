@@ -75,6 +75,7 @@ def test_ollama_client_posts_only_to_loopback_and_validates_the_reply(monkeypatc
     def fake_urlopen(request, timeout):
         observed["url"] = request.full_url
         observed["timeout"] = timeout
+        observed["payload"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
     monkeypatch.setattr("app.analysis.urlopen", fake_urlopen)
@@ -83,6 +84,9 @@ def test_ollama_client_posts_only_to_loopback_and_validates_the_reply(monkeypatc
     )
 
     assert observed["url"] == "http://127.0.0.1:11434/api/chat"
+    assert observed["payload"]["think"] is False  # type: ignore[index]
+    assert observed["payload"]["options"] == {"temperature": 0.1, "num_predict": 1_200}  # type: ignore[index]
+    assert observed["payload"]["format"]["type"] == "object"  # type: ignore[index]
     assert result.action_items[0].deadline_text == "до пятницы"
 
 

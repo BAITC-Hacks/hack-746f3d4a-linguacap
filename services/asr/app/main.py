@@ -18,11 +18,12 @@ from app.analysis import (
 from app.audio import AudioProcessingError, AudioValidationError, cleanup_workspace, create_workspace, extension_for_upload, prepare_audio, store_upload
 from app.config import Settings, get_settings
 from app.diarization import LocalPyannoteDiarizer
-from app.jobs import Diarizer, JobNotFoundError, Transcriber, TranscriptionJobManager
+from app.jobs import Diarizer, Job, JobNotFoundError, Transcriber, TranscriptionJobManager
 from app.schemas import (
     AudioPreparationResponse,
     DeviceStatus,
     HealthResponse,
+    JobEventResponse,
     JobResponse,
     MeetingProtocolResponse,
     ModelStatus,
@@ -46,8 +47,18 @@ def _model_status(path: str) -> ModelStatus:
     )
 
 
-def _job_response(job_id: str, state: str, error: str | None) -> JobResponse:
-    return JobResponse(id=job_id, status=state, error=error)
+def _job_response(job: Job) -> JobResponse:
+    return JobResponse(
+        id=job.job_id,
+        status=job.state,
+        error=job.error,
+        stage=job.stage,
+        progress_percent=job.progress_percent,
+        events=[
+            JobEventResponse(stage=event.stage, progress_percent=event.progress_percent, message=event.message)
+            for event in job.events
+        ],
+    )
 
 
 def create_app(
@@ -151,7 +162,7 @@ def create_app(
         try:
             await store_upload(file, job.workspace / f"source{extension}", max_bytes=configured_settings.max_upload_bytes)
             manager.submit(job.job_id, job.workspace / f"source{extension}")
-            return _job_response(job.job_id, job.state, job.error)
+            return _job_response(job)
         except AudioValidationError as error:
             manager.discard(job.job_id)
             raise HTTPException(status_code=400, detail=str(error)) from error
@@ -162,7 +173,7 @@ def create_app(
             job = app.state.jobs.get(job_id)
         except JobNotFoundError as error:
             raise HTTPException(status_code=404, detail="Задание не найдено.") from error
-        return _job_response(job.job_id, job.state, job.error)
+        return _job_response(job)
 
     @app.get("/jobs/{job_id}/result", response_model=TranscriptionResultResponse, tags=["transcription"])
     def get_result(job_id: str) -> TranscriptionResultResponse:

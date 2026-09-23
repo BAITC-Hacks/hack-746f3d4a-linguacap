@@ -87,7 +87,9 @@ class LocalOllamaProtocolAnalyzer:
         request_payload = {
             "model": self._settings.local_llm_model,
             "stream": False,
-            "format": "json",
+            "think": False,
+            "format": _PROTOCOL_JSON_SCHEMA,
+            "options": {"temperature": 0.1, "num_predict": 1_200},
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": _build_transcript_prompt(segments)},
@@ -118,6 +120,34 @@ _SYSTEM_PROMPT = """Ты формируешь протокол совещани�
 или несколько идентификаторов исходных сегментов из списка. deadline заполняй
 только полной ISO-датой YYYY-MM-DD, иначе null; исходную формулировку срока
 сохрани в deadline_text. status всегда \"new\"."""
+
+_PROTOCOL_JSON_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "summary", "key_points", "action_items"],
+    "properties": {
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "key_points": {"type": "array", "items": {"type": "string"}},
+        "action_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["description", "assignee", "deadline_text", "deadline", "source_segment_ids", "confidence", "status"],
+                "properties": {
+                    "description": {"type": "string"},
+                    "assignee": {"type": ["string", "null"]},
+                    "deadline_text": {"type": ["string", "null"]},
+                    "deadline": {"type": ["string", "null"]},
+                    "source_segment_ids": {"type": "array", "items": {"type": "string"}},
+                    "confidence": {"type": "number"},
+                    "status": {"type": "string", "enum": ["new"]},
+                },
+            },
+        },
+    },
+}
 
 
 def _build_transcript_prompt(segments: Iterable[ProtocolSourceSegment]) -> str:

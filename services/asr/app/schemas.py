@@ -8,6 +8,9 @@ from typing import Literal
 from pydantic import BaseModel
 
 
+JobStage = Literal["queued", "preparing", "diarizing", "transcribing", "completed", "failed"]
+
+
 class ModelStatus(BaseModel):
     state: Literal["available", "not_downloaded"]
     path: str
@@ -50,6 +53,15 @@ class JobResponse(BaseModel):
     id: str
     status: Literal["queued", "processing", "completed", "failed", "deleting"]
     error: str | None = None
+    stage: JobStage
+    progress_percent: int
+    events: list["JobEventResponse"]
+
+
+class JobEventResponse(BaseModel):
+    stage: JobStage
+    progress_percent: int
+    message: str
 
 
 class TranscriptSegmentResponse(BaseModel):

@@ -1,17 +1,27 @@
 "use client";
 
 import { AlertCircle, CheckCircle2, FileAudio, LoaderCircle, ShieldCheck, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ProcessingResult } from "@/components/protocol/processing-result";
 
-type JobStatus = "idle" | "queued" | "processing" | "completed" | "failed";
+type JobStatus = "idle" | "queued" | "processing" | "completed" | "failed" | "deleting";
+type JobStage = "queued" | "preparing" | "diarizing" | "transcribing" | "completed" | "failed";
+
+type JobEvent = {
+  stage: JobStage;
+  progress_percent: number;
+  message: string;
+};
 
 type JobResponse = {
   id?: string;
   status?: JobStatus;
   error?: string | null;
+  stage?: JobStage;
+  progress_percent?: number;
+  events?: JobEvent[];
 };
 
 const ACCEPTED_EXTENSIONS = [".mp3", ".wav", ".m4a", ".mp4"];
@@ -26,7 +36,8 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function statusCopy(status: JobStatus) {
+function statusCopy(status: JobStatus, stage?: JobStage) {
+  if (stage) return stageCopy(stage);
   switch (status) {
     case "queued":
       return "Запись в очереди";
@@ -36,9 +47,43 @@ function statusCopy(status: JobStatus) {
       return "Расшифровка готова";
     case "failed":
       return "Обработка не завершилась";
+    case "deleting":
+      return "Удаляем временные данные";
     default:
       return "Готово к обработке";
   }
+}
+
+function stageCopy(stage: JobStage) {
+  switch (stage) {
+    case "queued":
+      return "Запись в очереди";
+    case "preparing":
+      return "Подготавливаем аудио";
+    case "diarizing":
+      return "Определяем спикеров";
+    case "transcribing":
+      return "Распознаём речь";
+    case "completed":
+      return "Расшифровка готова";
+    case "failed":
+      return "Обработка не завершилась";
+  }
+}
+
+function isJobStage(value: unknown): value is JobStage {
+  return value === "queued" || value === "preparing" || value === "diarizing" || value === "transcribing" || value === "completed" || value === "failed";
+}
+
+function isJobEvent(value: unknown): value is JobEvent {
+  return typeof value === "object"
+    && value !== null
+    && "stage" in value
+    && isJobStage(value.stage)
+    && "progress_percent" in value
+    && typeof value.progress_percent === "number"
+    && "message" in value
+    && typeof value.message === "string";
 }
 
 export function RecordingUpload() {
@@ -49,6 +94,21 @@ export function RecordingUpload() {
   const [status, setStatus] = useState<JobStatus>("idle");
   const [jobId, setJobId] = useState<string>();
   const [error, setError] = useState<string>();
+  const [stage, setStage] = useState<JobStage>();
+  const [progressPercent, setProgressPercent] = useState(0);
+  const [events, setEvents] = useState<JobEvent[]>([]);
+
+  const updateJobState = useCallback((next: JobResponse) => {
+    if (next.status === "queued" || next.status === "processing" || next.status === "completed" || next.status === "failed" || next.status === "deleting") {
+      setStatus(next.status);
+    }
+    if (isJobStage(next.stage)) setStage(next.stage);
+    if (typeof next.progress_percent === "number" && Number.isFinite(next.progress_percent)) {
+      setProgressPercent(Math.min(100, Math.max(0, Math.round(next.progress_percent))));
+    }
+    if (Array.isArray(next.events)) setEvents(next.events.filter(isJobEvent));
+    if (next.error) setError(next.error);
+  }, []);
 
   useEffect(() => {
     if (!file) return;
@@ -76,10 +136,7 @@ export function RecordingUpload() {
         const payload: unknown = await response.json().catch(() => ({}));
         if (!current || typeof payload !== "object" || payload === null) return;
         const next = payload as JobResponse;
-        if (next.status === "queued" || next.status === "processing" || next.status === "completed" || next.status === "failed") {
-          setStatus(next.status);
-          if (next.error) setError(next.error);
-        }
+        updateJobState(next);
       } catch {
         if (current) setError("Не удалось получить статус локального задания.");
       }
@@ -90,12 +147,15 @@ export function RecordingUpload() {
       current = false;
       window.clearInterval(timer);
     };
-  }, [jobId, status]);
+  }, [jobId, status, updateJobState]);
 
   const selectFile = (nextFile: File | undefined) => {
     setError(undefined);
     setJobId(undefined);
     setStatus("idle");
+    setStage(undefined);
+    setProgressPercent(0);
+    setEvents([]);
     setDurationSeconds(undefined);
     if (!nextFile) return;
     if (!isAccepted(nextFile)) {
@@ -125,7 +185,7 @@ export function RecordingUpload() {
         throw new Error(result.error ?? "Локальный сервис не принял запись.");
       }
       setJobId(result.id);
-      setStatus(result.status);
+      updateJobState(result);
     } catch (caughtError) {
       setStatus("failed");
       setError(caughtError instanceof Error ? caughtError.message : "Не удалось запустить обработку.");
@@ -210,12 +270,42 @@ export function RecordingUpload() {
       <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm text-muted">
           {active ? <LoaderCircle className="h-4 w-4 animate-spin text-accent" aria-hidden="true" /> : status === "completed" ? <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" /> : null}
-          <span>{statusCopy(status)}</span>
+          <span>{statusCopy(status, stage)}</span>
         </div>
         <Button onClick={() => void upload()} disabled={!file || !hasConsent || active}>
           {active ? "Обрабатываем…" : "Начать обработку"}
         </Button>
       </div>
+
+      {jobId ? (
+        <div className="mt-5 rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <p className="font-medium">Ход локальной обработки</p>
+            <span className="font-medium text-accent">{progressPercent}%</span>
+          </div>
+          <div
+            className="mt-3 h-2 overflow-hidden rounded-full bg-[rgb(var(--border))]"
+            role="progressbar"
+            aria-label="Прогресс локальной обработки"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progressPercent}
+          >
+            <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${progressPercent}%` }} />
+          </div>
+          <div className="mt-4 border-t pt-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted">Журнал обработки</p>
+            <ol className="mt-2 space-y-2 text-sm">
+              {events.map((event, index) => (
+                <li key={`${event.stage}-${event.progress_percent}-${index}`} className="flex gap-3 text-muted">
+                  <span className="w-9 shrink-0 text-right font-medium text-accent">{event.progress_percent}%</span>
+                  <span>{event.message}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </div>
+      ) : null}
 
       {error ? (
         <p className="mt-4 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-950 dark:bg-rose-950/30 dark:text-rose-200">

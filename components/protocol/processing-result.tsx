@@ -20,7 +20,23 @@ type TranscriptionResult = {
   speakers: Array<{ id: string; display_name: string }>;
 };
 
+type MeetingProtocol = {
+  title: string;
+  summary: string;
+  key_points: string[];
+  action_items: Array<{
+    description: string;
+    assignee: string | null;
+    deadline_text: string | null;
+    deadline: string | null;
+    source_segment_ids: string[];
+    confidence: number;
+    status: "new";
+  }>;
+};
+
 type Tab = "summary" | "actions" | "transcript";
+type AnalysisState = "idle" | "loading" | "ready" | "error";
 
 function timestamp(seconds: number) {
   const minutes = Math.floor(seconds / 60);
@@ -28,15 +44,84 @@ function timestamp(seconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
-function EmptyAnalysis({ type }: { type: "summary" | "actions" }) {
-  const title = type === "summary" ? "Саммари пока недоступно" : "Поручения пока недоступны";
+function AnalysisPanel({
+  type,
+  protocol,
+  state,
+  error,
+  onCreate,
+  onOpenSource,
+}: {
+  type: "summary" | "actions";
+  protocol?: MeetingProtocol;
+  state: AnalysisState;
+  error?: string;
+  onCreate: () => void;
+  onOpenSource: (segmentId: string) => void;
+}) {
+  if (state === "loading") {
+    return (
+      <div className="flex items-center gap-2 rounded-xl border bg-[rgb(var(--surface-raised))] p-5 text-sm text-muted">
+        <LoaderCircle className="h-4 w-4 animate-spin text-accent" aria-hidden="true" />
+        Локальная модель формирует проверяемый протокол…
+      </div>
+    );
+  }
+
+  if (!protocol) {
+    const title = type === "summary" ? "Сформируйте саммари" : "Сформируйте поручения";
+    const buttonText = type === "summary" ? "Сформировать саммари" : "Извлечь поручения";
+    return (
+      <div className="rounded-xl border bg-[rgb(var(--surface-raised))] p-5 text-sm leading-6 text-muted">
+        <p className="font-medium text-[rgb(var(--foreground))]">{title}</p>
+        <p className="mt-2">Транскрипт будет обработан qwen3:4b только на этом компьютере. Ответственные и сроки без явного подтверждения в реплике останутся пустыми.</p>
+        {error ? <p className="mt-3 text-rose-700 dark:text-rose-300">{error}</p> : null}
+        <Button className="mt-4" size="sm" onClick={onCreate}>
+          <ClipboardList className="h-4 w-4" aria-hidden="true" />
+          {buttonText}
+        </Button>
+      </div>
+    );
+  }
+
+  if (type === "summary") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl border bg-[rgb(var(--surface-raised))] p-5">
+          <p className="text-sm font-medium text-accent">{protocol.title}</p>
+          <p className="mt-3 whitespace-pre-wrap text-sm leading-6">{protocol.summary}</p>
+        </div>
+        {protocol.key_points.length ? (
+          <ul className="space-y-2 rounded-xl border bg-[rgb(var(--surface-raised))] p-5 text-sm leading-6">
+            {protocol.key_points.map((point, index) => <li key={`${index}-${point}`} className="flex gap-2"><span className="text-accent">•</span><span>{point}</span></li>)}
+          </ul>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (!protocol.action_items.length) {
+    return <p className="rounded-xl border bg-[rgb(var(--surface-raised))] p-5 text-sm text-muted">Явно сформулированных поручений в транскрипте не найдено.</p>;
+  }
+
   return (
-    <div className="rounded-xl border bg-[rgb(var(--surface-raised))] p-5 text-sm leading-6 text-muted">
-      <p className="font-medium text-[rgb(var(--foreground))]">{title}</p>
-      <p className="mt-2">
-        Для формирования этого раздела нужна установленная локальная LLM. Облачный AI не используется: после настройки Ollama анализ будет выполнен только на этом компьютере.
-      </p>
-    </div>
+    <ol className="space-y-3">
+      {protocol.action_items.map((item, index) => (
+        <li key={`${index}-${item.description}`} className="rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
+          <p className="text-sm leading-6">{item.description}</p>
+          <dl className="mt-3 grid gap-x-5 gap-y-1 text-xs text-muted sm:grid-cols-2">
+            <div><dt className="inline">Ответственный: </dt><dd className="inline">{item.assignee ?? "не указан"}</dd></div>
+            <div><dt className="inline">Срок: </dt><dd className="inline">{item.deadline_text ?? item.deadline ?? "не указан"}</dd></div>
+          </dl>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
+            <span>Источник:</span>
+            {item.source_segment_ids.map((segmentId) => (
+              <Button key={segmentId} size="sm" variant="secondary" onClick={() => onOpenSource(segmentId)}>{segmentId}</Button>
+            ))}
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -109,6 +194,9 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
   const [tab, setTab] = useState<Tab>("transcript");
   const [error, setError] = useState<string>();
   const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
+  const [protocol, setProtocol] = useState<MeetingProtocol>();
+  const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
+  const [analysisError, setAnalysisError] = useState<string>();
 
   useEffect(() => {
     let current = true;
@@ -133,6 +221,32 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
       current = false;
     };
   }, [jobId]);
+
+  const createAnalysis = async () => {
+    if (analysisState === "loading" || protocol) return;
+    setAnalysisState("loading");
+    setAnalysisError(undefined);
+    try {
+      const response = await fetch(`/api/asr/jobs/${jobId}/analysis`, { method: "POST" });
+      const payload: unknown = await response.json().catch(() => ({}));
+      if (!response.ok || !isMeetingProtocol(payload)) {
+        const message = typeof payload === "object" && payload !== null && "error" in payload && typeof payload.error === "string"
+          ? payload.error
+          : "Не удалось сформировать локальный протокол.";
+        throw new Error(message);
+      }
+      setProtocol(payload);
+      setAnalysisState("ready");
+    } catch (caughtError) {
+      setAnalysisState("error");
+      setAnalysisError(caughtError instanceof Error ? caughtError.message : "Не удалось сформировать локальный протокол.");
+    }
+  };
+
+  const openSource = (segmentId: string) => {
+    setTab("transcript");
+    window.setTimeout(() => document.getElementById(`segment-${segmentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+  };
 
   if (error) {
     return (
@@ -175,8 +289,8 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
       </div>
 
       <div className="mt-5" role="tabpanel">
-        {tab === "summary" ? <EmptyAnalysis type="summary" /> : null}
-        {tab === "actions" ? <EmptyAnalysis type="actions" /> : null}
+        {tab === "summary" ? <AnalysisPanel type="summary" protocol={protocol} state={analysisState} error={analysisError} onCreate={() => void createAnalysis()} onOpenSource={openSource} /> : null}
+        {tab === "actions" ? <AnalysisPanel type="actions" protocol={protocol} state={analysisState} error={analysisError} onCreate={() => void createAnalysis()} onOpenSource={openSource} /> : null}
         {tab === "transcript" ? (
           <>
             {result.speakers.length ? (
@@ -194,7 +308,7 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
             ) : null}
             <ol className="space-y-3">
               {result.segments.map((segment) => (
-                <li key={segment.id} className="rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
+                <li id={`segment-${segment.id}`} key={segment.id} className="rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
                     <span className="font-medium text-accent">{segment.speaker_id ? speakerNames[segment.speaker_id] ?? segment.speaker_name ?? segment.speaker_id : "Спикер не определён"}</span>
                     <span>{timestamp(segment.start_seconds)}–{timestamp(segment.end_seconds)}</span>
@@ -208,4 +322,14 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
       </div>
     </section>
   );
+}
+
+function isMeetingProtocol(value: unknown): value is MeetingProtocol {
+  if (typeof value !== "object" || value === null) return false;
+  const protocol = value as Partial<MeetingProtocol>;
+  return typeof protocol.title === "string"
+    && typeof protocol.summary === "string"
+    && Array.isArray(protocol.key_points)
+    && protocol.key_points.every((item) => typeof item === "string")
+    && Array.isArray(protocol.action_items);
 }

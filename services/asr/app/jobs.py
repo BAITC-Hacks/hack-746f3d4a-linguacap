@@ -22,7 +22,16 @@ from app.config import Settings
 from app.diarization import DiarizationError, LocalPyannoteDiarizer, SpeakerTurn, speaker_for_interval
 from app.transcription import LocalRukkTranscriber, TranscriptionError
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
+
+_STAGE_MESSAGES = {
+    "queued": "Запись принята и ожидает свободный локальный слот.",
+    "preparing": "Проверяем и подготавливаем аудио.",
+    "diarizing": "Определяем реплики и спикеров.",
+    "transcribing": "Распознаём речевые фрагменты локальной ASR-моделью.",
+    "completed": "Транскрибация и диаризация завершены.",
+    "failed": "Локальная обработка не завершилась.",
+}
 
 
 class Transcriber(Protocol):
@@ -59,11 +68,21 @@ class TranscriptionResult:
     speakers: tuple[Speaker, ...] = ()
 
 
+@dataclass(frozen=True)
+class JobEvent:
+    stage: str
+    progress_percent: int
+    message: str
+
+
 @dataclass
 class Job:
     job_id: str
     workspace: Path
     state: str = "queued"
+    stage: str = "queued"
+    progress_percent: int = 0
+    events: list[JobEvent] = field(default_factory=lambda: [JobEvent("queued", 0, _STAGE_MESSAGES["queued"])])
     created_at: float = field(default_factory=time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -101,6 +120,7 @@ class TranscriptionJobManager:
         job = Job(job_id=job_id, workspace=workspace)
         with self._lock:
             self._jobs[job_id] = job
+        logger.info("asr_job_queued id=%s stage=queued progress_percent=0", job_id)
         return job
 
     def submit(self, job_id: str, source_path: Path) -> None:
@@ -125,6 +145,8 @@ class TranscriptionJobManager:
             job = self._get(job_id)
             if job.state != "completed" or job.result is None:
                 raise RuntimeError("The job has not completed.")
+            if job.analysis is not None:
+                return job.analysis
             segments = tuple(
                 ProtocolSourceSegment(
                     segment_id=segment.segment_id,
@@ -136,12 +158,18 @@ class TranscriptionJobManager:
                 for segment in job.result.segments
             )
 
-        protocol = self._analyzer.analyze(segments)
+        logger.info("asr_protocol_analysis_started id=%s segments=%d", job_id, len(segments))
+        try:
+            protocol = self._analyzer.analyze(segments)
+        except Exception:
+            logger.warning("asr_protocol_analysis_failed id=%s", job_id)
+            raise
         with self._lock:
             job = self._get(job_id)
             if job.state != "completed" or job.result is None:
                 raise RuntimeError("The job is no longer available.")
             job.analysis = protocol
+        logger.info("asr_protocol_analysis_completed id=%s action_items=%d", job_id, len(protocol.action_items))
         return protocol
 
     def analysis_for(self, job_id: str) -> MeetingProtocol:
@@ -208,6 +236,19 @@ class TranscriptionJobManager:
         with self._lock:
             return self._get(job_id).cancel_requested
 
+    def _set_progress(self, job_id: str, stage: str, progress_percent: int) -> None:
+        """Store safe, user-visible milestones without logging recording content."""
+        with self._lock:
+            job = self._get(job_id)
+            if job.cancel_requested:
+                return
+            if job.stage == stage and job.progress_percent == progress_percent:
+                return
+            job.stage = stage
+            job.progress_percent = progress_percent
+            job.events.append(JobEvent(stage, progress_percent, _STAGE_MESSAGES[stage]))
+        logger.info("asr_job_progress id=%s stage=%s progress_percent=%d", job_id, stage, progress_percent)
+
     def _process(self, job_id: str, source_path: Path) -> None:
         with self._lock:
             job = self._get(job_id)
@@ -218,12 +259,20 @@ class TranscriptionJobManager:
         logger.info("asr_job_started id=%s", job_id)
 
         try:
+            self._set_progress(job_id, "preparing", 5)
             prepared = prepare_audio(source_path, job.workspace, self._settings)
+            if self._is_cancelled(job_id):
+                return
+            self._set_progress(job_id, "diarizing", 25)
             turns = self._diarizer.diarize(prepared.normalized_path) if self._diarizer and self._diarizer.is_installed else ()
+            if self._is_cancelled(job_id):
+                return
             speakers = tuple(Speaker(turn.speaker_id, f"Спикер {index}") for index, turn in enumerate(_first_turns(turns), start=1))
             speaker_names = {speaker.speaker_id: speaker.display_name for speaker in speakers}
             segments: list[TranscriptSegment] = []
-            for chunk in prepared.chunks:
+            chunk_count = len(prepared.chunks)
+            self._set_progress(job_id, "transcribing", 50)
+            for index, chunk in enumerate(prepared.chunks, start=1):
                 if self._is_cancelled(job_id):
                     return
                 text = self._transcriber.transcribe(chunk.path)
@@ -238,6 +287,7 @@ class TranscriptionJobManager:
                         speaker_name=speaker_names.get(speaker_id),
                     )
                 )
+                self._set_progress(job_id, "transcribing", 50 + round(index / max(chunk_count, 1) * 45))
             result = TranscriptionResult(tuple(segments), merge_segment_text(segments), speakers)
             with self._lock:
                 job = self._get(job_id)
@@ -250,6 +300,7 @@ class TranscriptionJobManager:
                         round((time() - job.started_at) * 1_000) if job.started_at else 0,
                         len(segments),
                     )
+            self._set_progress(job_id, "completed", 100)
         except (AudioProcessingError, DiarizationError, TranscriptionError):
             with self._lock:
                 job = self._get(job_id)
@@ -257,6 +308,7 @@ class TranscriptionJobManager:
                     job.error = "Локальное распознавание не удалось завершить."
                     job.state = "failed"
                     logger.warning("asr_job_failed id=%s", job_id)
+            self._set_progress(job_id, "failed", 100)
         finally:
             cleanup_workspace(job.workspace, self._settings)
             with self._lock:
