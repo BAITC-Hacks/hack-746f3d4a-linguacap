@@ -103,6 +103,7 @@ class Settings:
     device_fallback_reason: str | None
     ffmpeg_binary: str
     allowed_origins: tuple[str, ...]
+    protocol_store_path: Path = SERVICE_ROOT / "runtime" / "protocols.sqlite3"
     nemo_model_dir: Path = SERVICE_ROOT / "models" / "nemo"
     ffprobe_binary: str = "ffprobe"
     runtime_dir: Path = SERVICE_ROOT / "runtime"
@@ -154,6 +155,7 @@ class Settings:
             nemo_model_dir=_path_from_env(env.get("ASR_NEMO_MODEL_DIR", str(models_dir / "nemo")), base_dir=SERVICE_ROOT),
             diarization_model_dir=_path_from_env(env.get("ASR_DIARIZATION_MODEL_DIR", str(models_dir / "diarization")), base_dir=SERVICE_ROOT),
             llm_model_dir=_path_from_env(env.get("ASR_LLM_MODEL_DIR", str(models_dir / "llm")), base_dir=SERVICE_ROOT),
+            protocol_store_path=_path_from_env(env.get("ASR_PROTOCOL_STORE_PATH", "runtime/protocols.sqlite3"), base_dir=SERVICE_ROOT),
             local_llm_provider=local_llm_provider,
             local_llm_base_url=_local_runtime_url(env.get("ASR_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434")),
             local_llm_model=local_llm_model,

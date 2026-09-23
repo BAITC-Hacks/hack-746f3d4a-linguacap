@@ -82,6 +82,17 @@ class RenameSpeakerRequest(BaseModel):
     display_name: str
 
 
+class UpdateTranscriptSegmentRequest(BaseModel):
+    text: str
+
+
+class UpdateActionRequest(BaseModel):
+    description: str
+    assignee: str | None = None
+    deadline_text: str | None = None
+    deadline: date | None = None
+
+
 class TranscriptionResultResponse(BaseModel):
     text: str
     segments: list[TranscriptSegmentResponse]

@@ -20,19 +20,21 @@ type TranscriptionResult = {
   speakers: Array<{ id: string; display_name: string }>;
 };
 
+type ActionItem = {
+  description: string;
+  assignee: string | null;
+  deadline_text: string | null;
+  deadline: string | null;
+  source_segment_ids: string[];
+  confidence: number;
+  status: "new";
+};
+
 type MeetingProtocol = {
   title: string;
   summary: string;
   key_points: string[];
-  action_items: Array<{
-    description: string;
-    assignee: string | null;
-    deadline_text: string | null;
-    deadline: string | null;
-    source_segment_ids: string[];
-    confidence: number;
-    status: "new";
-  }>;
+  action_items: ActionItem[];
 };
 
 type Tab = "summary" | "actions" | "transcript";
@@ -51,6 +53,8 @@ function AnalysisPanel({
   error,
   onCreate,
   onOpenSource,
+  jobId,
+  onActionUpdated,
 }: {
   type: "summary" | "actions";
   protocol?: MeetingProtocol;
@@ -58,6 +62,8 @@ function AnalysisPanel({
   error?: string;
   onCreate: () => void;
   onOpenSource: (segmentId: string) => void;
+  jobId: string;
+  onActionUpdated: (actionIndex: number, action: ActionItem) => void;
 }) {
   if (state === "loading") {
     return (
@@ -107,21 +113,90 @@ function AnalysisPanel({
   return (
     <ol className="space-y-3">
       {protocol.action_items.map((item, index) => (
-        <li key={`${index}-${item.description}`} className="rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
-          <p className="text-sm leading-6">{item.description}</p>
-          <dl className="mt-3 grid gap-x-5 gap-y-1 text-xs text-muted sm:grid-cols-2">
-            <div><dt className="inline">Ответственный: </dt><dd className="inline">{item.assignee ?? "не указан"}</dd></div>
-            <div><dt className="inline">Срок: </dt><dd className="inline">{item.deadline_text ?? item.deadline ?? "не указан"}</dd></div>
-          </dl>
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
-            <span>Источник:</span>
-            {item.source_segment_ids.map((segmentId) => (
-              <Button key={segmentId} size="sm" variant="secondary" onClick={() => onOpenSource(segmentId)}>{segmentId}</Button>
-            ))}
-          </div>
+        <li key={`${index}-${item.description}`}>
+          <ActionEditor
+            action={item}
+            actionIndex={index}
+            jobId={jobId}
+            onOpenSource={onOpenSource}
+            onUpdated={onActionUpdated}
+          />
         </li>
       ))}
     </ol>
+  );
+}
+
+function ActionEditor({
+  action,
+  actionIndex,
+  jobId,
+  onOpenSource,
+  onUpdated,
+}: {
+  action: ActionItem;
+  actionIndex: number;
+  jobId: string;
+  onOpenSource: (segmentId: string) => void;
+  onUpdated: (actionIndex: number, action: ActionItem) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [description, setDescription] = useState(action.description);
+  const [assignee, setAssignee] = useState(action.assignee ?? "");
+  const [deadlineText, setDeadlineText] = useState(action.deadline_text ?? "");
+  const [deadline, setDeadline] = useState(action.deadline ?? "");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  const warnings = [!action.assignee ? "Не указан ответственный" : null, !action.deadline && !action.deadline_text ? "Не указан срок" : null].filter(Boolean);
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsSaving(true);
+    setError(undefined);
+    try {
+      const response = await fetch(`/api/asr/jobs/${jobId}/actions/${actionIndex}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description,
+          assignee: assignee.trim() || null,
+          deadline_text: deadlineText.trim() || null,
+          deadline: deadline || null,
+        }),
+      });
+      const payload: unknown = await response.json().catch(() => ({}));
+      if (!response.ok || !isActionItem(payload)) throw new Error("Не удалось сохранить поручение.");
+      onUpdated(actionIndex, payload);
+      setEditing(false);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Не удалось сохранить поручение.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
+      {editing ? (
+        <form className="space-y-3" onSubmit={(event) => void save(event)}>
+          <label className="flex flex-col gap-1 text-xs text-muted"><span>Поручение</span><textarea className="min-h-20 rounded-lg border bg-[rgb(var(--surface))] p-3 text-sm text-[rgb(var(--foreground))] outline-none ring-accent focus:ring-2" value={description} maxLength={2000} onChange={(event) => setDescription(event.target.value)} /></label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 text-xs text-muted"><span>Ответственный</span><input className="min-h-10 rounded-lg border bg-[rgb(var(--surface))] px-3 text-sm text-[rgb(var(--foreground))] outline-none ring-accent focus:ring-2" value={assignee} maxLength={300} onChange={(event) => setAssignee(event.target.value)} /></label>
+            <label className="flex flex-col gap-1 text-xs text-muted"><span>Точная дата</span><input className="min-h-10 rounded-lg border bg-[rgb(var(--surface))] px-3 text-sm text-[rgb(var(--foreground))] outline-none ring-accent focus:ring-2" type="date" value={deadline} onChange={(event) => setDeadline(event.target.value)} /></label>
+          </div>
+          <label className="flex flex-col gap-1 text-xs text-muted"><span>Формулировка срока</span><input className="min-h-10 rounded-lg border bg-[rgb(var(--surface))] px-3 text-sm text-[rgb(var(--foreground))] outline-none ring-accent focus:ring-2" value={deadlineText} maxLength={300} placeholder="Например, до конца недели" onChange={(event) => setDeadlineText(event.target.value)} /></label>
+          <div className="flex flex-wrap gap-2"><Button size="sm" type="submit" disabled={isSaving || !description.trim()}>{isSaving ? "Сохраняем…" : "Сохранить"}</Button><Button size="sm" variant="secondary" onClick={() => setEditing(false)} disabled={isSaving}>Отмена</Button></div>
+          {error ? <p className="text-xs text-rose-700 dark:text-rose-300">{error}</p> : null}
+        </form>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-start justify-between gap-3"><p className="text-sm leading-6">{action.description}</p><Button size="sm" variant="secondary" onClick={() => setEditing(true)}><PencilLine className="h-4 w-4" aria-hidden="true" />Изменить</Button></div>
+          {warnings.length ? <p className="mt-3 rounded-lg bg-amber-100 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">{warnings.join(" · ")}</p> : null}
+          <dl className="mt-3 grid gap-x-5 gap-y-1 text-xs text-muted sm:grid-cols-2"><div><dt className="inline">Ответственный: </dt><dd className="inline">{action.assignee ?? "не указан"}</dd></div><div><dt className="inline">Срок: </dt><dd className="inline">{action.deadline_text ?? action.deadline ?? "не указан"}</dd></div></dl>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted"><span>Источник:</span>{action.source_segment_ids.map((segmentId) => <Button key={segmentId} size="sm" variant="secondary" onClick={() => onOpenSource(segmentId)}>{segmentId}</Button>)}</div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -189,6 +264,60 @@ function SpeakerRenameForm({
   );
 }
 
+function TranscriptSegmentEditor({
+  jobId,
+  segment,
+  speakerName,
+  onUpdated,
+}: {
+  jobId: string;
+  segment: TranscriptSegment;
+  speakerName: string;
+  onUpdated: (segment: TranscriptSegment) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(segment.text);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsSaving(true);
+    setError(undefined);
+    try {
+      const response = await fetch(`/api/asr/jobs/${jobId}/segments/${segment.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: value }),
+      });
+      const payload: unknown = await response.json().catch(() => ({}));
+      if (!response.ok || !isTranscriptSegment(payload)) throw new Error("Не удалось сохранить реплику.");
+      onUpdated(payload);
+      setEditing(false);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Не удалось сохранить реплику.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <li id={`segment-${segment.id}`} className="rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted"><span className="font-medium text-accent">{speakerName}</span><span>{timestamp(segment.start_seconds)}–{timestamp(segment.end_seconds)}</span></div>
+        {!editing ? <Button size="sm" variant="secondary" onClick={() => setEditing(true)}><PencilLine className="h-4 w-4" aria-hidden="true" />Исправить</Button> : null}
+      </div>
+      {editing ? (
+        <form className="mt-3 space-y-3" onSubmit={(event) => void save(event)}>
+          <textarea className="min-h-24 w-full rounded-lg border bg-[rgb(var(--surface))] p-3 text-sm leading-6 text-[rgb(var(--foreground))] outline-none ring-accent focus:ring-2" value={value} maxLength={10_000} onChange={(event) => setValue(event.target.value)} />
+          <div className="flex flex-wrap gap-2"><Button size="sm" type="submit" disabled={isSaving || !value.trim()}>{isSaving ? "Сохраняем…" : "Сохранить"}</Button><Button size="sm" variant="secondary" onClick={() => { setValue(segment.text); setEditing(false); }} disabled={isSaving}>Отмена</Button></div>
+          {error ? <p className="text-xs text-rose-700 dark:text-rose-300">{error}</p> : null}
+        </form>
+      ) : <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{segment.text}</p>}
+    </li>
+  );
+}
+
 export function ProcessingResult({ jobId }: { jobId: string }) {
   const [result, setResult] = useState<TranscriptionResult>();
   const [tab, setTab] = useState<Tab>("transcript");
@@ -212,6 +341,12 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
           throw new Error(message);
         }
         setResult(payload as TranscriptionResult);
+        const analysisResponse = await fetch(`/api/asr/jobs/${jobId}/analysis`, { cache: "no-store" });
+        const analysisPayload: unknown = await analysisResponse.json().catch(() => ({}));
+        if (current && analysisResponse.ok && isMeetingProtocol(analysisPayload)) {
+          setProtocol(analysisPayload);
+          setAnalysisState("ready");
+        }
       } catch (caughtError) {
         if (current) setError(caughtError instanceof Error ? caughtError.message : "Не удалось получить результат локального задания.");
       }
@@ -248,6 +383,23 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
     window.setTimeout(() => document.getElementById(`segment-${segmentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
   };
 
+  const updateTranscriptSegment = (updatedSegment: TranscriptSegment) => {
+    setResult((current) => current ? {
+      ...current,
+      segments: current.segments.map((segment) => segment.id === updatedSegment.id ? updatedSegment : segment),
+    } : current);
+    setProtocol(undefined);
+    setAnalysisState("idle");
+    setAnalysisError("Транскрипт изменён. Сформируйте саммари заново.");
+  };
+
+  const updateAction = (actionIndex: number, updatedAction: ActionItem) => {
+    setProtocol((current) => current ? {
+      ...current,
+      action_items: current.action_items.map((action, index) => index === actionIndex ? updatedAction : action),
+    } : current);
+  };
+
   if (error) {
     return (
       <p className="mt-6 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-950 dark:bg-rose-950/30 dark:text-rose-200">
@@ -272,7 +424,7 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
         <div>
           <p className="text-sm font-medium text-accent">Результат обработки</p>
           <h2 className="mt-1 text-xl font-semibold">Расшифровка готова</h2>
-          <p className="mt-2 text-sm text-muted">{result.segments.length} сегм. · результат хранится локально до закрытия задания.</p>
+          <p className="mt-2 text-sm text-muted">{result.segments.length} сегм. · результат сохранён только в локальном хранилище этого компьютера.</p>
         </div>
       </div>
 
@@ -289,8 +441,8 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
       </div>
 
       <div className="mt-5" role="tabpanel">
-        {tab === "summary" ? <AnalysisPanel type="summary" protocol={protocol} state={analysisState} error={analysisError} onCreate={() => void createAnalysis()} onOpenSource={openSource} /> : null}
-        {tab === "actions" ? <AnalysisPanel type="actions" protocol={protocol} state={analysisState} error={analysisError} onCreate={() => void createAnalysis()} onOpenSource={openSource} /> : null}
+        {tab === "summary" ? <AnalysisPanel type="summary" protocol={protocol} state={analysisState} error={analysisError} onCreate={() => void createAnalysis()} onOpenSource={openSource} jobId={jobId} onActionUpdated={updateAction} /> : null}
+        {tab === "actions" ? <AnalysisPanel type="actions" protocol={protocol} state={analysisState} error={analysisError} onCreate={() => void createAnalysis()} onOpenSource={openSource} jobId={jobId} onActionUpdated={updateAction} /> : null}
         {tab === "transcript" ? (
           <>
             {result.speakers.length ? (
@@ -307,15 +459,7 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
               </div>
             ) : null}
             <ol className="space-y-3">
-              {result.segments.map((segment) => (
-                <li id={`segment-${segment.id}`} key={segment.id} className="rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-                    <span className="font-medium text-accent">{segment.speaker_id ? speakerNames[segment.speaker_id] ?? segment.speaker_name ?? segment.speaker_id : "Спикер не определён"}</span>
-                    <span>{timestamp(segment.start_seconds)}–{timestamp(segment.end_seconds)}</span>
-                  </div>
-                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{segment.text}</p>
-                </li>
-              ))}
+              {result.segments.map((segment) => <TranscriptSegmentEditor key={segment.id} jobId={jobId} segment={segment} speakerName={segment.speaker_id ? speakerNames[segment.speaker_id] ?? segment.speaker_name ?? segment.speaker_id : "Спикер не определён"} onUpdated={updateTranscriptSegment} />)}
             </ol>
           </>
         ) : null}
@@ -332,4 +476,25 @@ function isMeetingProtocol(value: unknown): value is MeetingProtocol {
     && Array.isArray(protocol.key_points)
     && protocol.key_points.every((item) => typeof item === "string")
     && Array.isArray(protocol.action_items);
+}
+
+function isActionItem(value: unknown): value is ActionItem {
+  return typeof value === "object" && value !== null
+    && "description" in value && typeof value.description === "string"
+    && "assignee" in value && (typeof value.assignee === "string" || value.assignee === null)
+    && "deadline_text" in value && (typeof value.deadline_text === "string" || value.deadline_text === null)
+    && "deadline" in value && (typeof value.deadline === "string" || value.deadline === null)
+    && "source_segment_ids" in value && Array.isArray(value.source_segment_ids)
+    && "confidence" in value && typeof value.confidence === "number"
+    && "status" in value && value.status === "new";
+}
+
+function isTranscriptSegment(value: unknown): value is TranscriptSegment {
+  return typeof value === "object" && value !== null
+    && "id" in value && typeof value.id === "string"
+    && "start_seconds" in value && typeof value.start_seconds === "number"
+    && "end_seconds" in value && typeof value.end_seconds === "number"
+    && "text" in value && typeof value.text === "string"
+    && "speaker_id" in value && (typeof value.speaker_id === "string" || value.speaker_id === null)
+    && "speaker_name" in value && (typeof value.speaker_name === "string" || value.speaker_name === null);
 }

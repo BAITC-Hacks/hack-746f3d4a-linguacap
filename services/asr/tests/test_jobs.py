@@ -75,6 +75,7 @@ def job_settings(tmp_path: Path) -> Settings:
         {
             "ASR_DEVICE": "cpu",
             "ASR_RUNTIME_DIR": str(tmp_path / "runtime"),
+            "ASR_PROTOCOL_STORE_PATH": str(tmp_path / "runtime" / "protocols.sqlite3"),
             "ASR_MAX_UPLOAD_BYTES": "10000000",
             "ASR_MAX_AUDIO_DURATION_SECONDS": "30",
             "ASR_CHUNK_DURATION_SECONDS": "18",
@@ -186,6 +187,38 @@ def test_completed_transcript_can_be_analyzed_with_source_segment_links(tmp_path
     manager.shutdown()
 
 
+def test_completed_result_and_user_edits_survive_a_manager_restart(tmp_path: Path):
+    settings = job_settings(tmp_path)
+    first_manager = TranscriptionJobManager(settings, FakeTranscriber(), FakeDiarizer(), FakeAnalyzer())
+    job = first_manager.create()
+    source = job.workspace / "source.wav"
+    write_speech_like_wav(source)
+
+    first_manager.submit(job.job_id, source)
+    assert job.future is not None
+    job.future.result(timeout=10)
+    first_manager.analyze(job.job_id)
+    first_manager.update_segment(job.job_id, "chunk-0001", "Исправленная реплика")
+    second_analysis = first_manager.analyze(job.job_id)
+    first_manager.update_action(
+        job.job_id,
+        0,
+        description="Подготовить исправленный отчёт",
+        assignee="Алия",
+        deadline_text="до пятницы",
+        deadline=None,
+    )
+    first_manager.shutdown()
+
+    restarted_manager = TranscriptionJobManager(settings, FakeTranscriber(), FakeDiarizer(), FakeAnalyzer())
+    assert restarted_manager.get(job.job_id).state == "completed"
+    assert restarted_manager.result_for(job.job_id).segments[0].text == "Исправленная реплика"
+    assert restarted_manager.analysis_for(job.job_id).action_items[0].assignee == "Алия"
+    assert second_analysis.action_items[0].description == "Подготовить отчёт"
+    assert restarted_manager.delete(job.job_id)
+    restarted_manager.shutdown()
+
+
 def test_analysis_api_returns_only_validated_protocol_data(tmp_path: Path):
     settings = job_settings(tmp_path)
     source = tmp_path / "meeting.wav"
@@ -201,6 +234,20 @@ def test_analysis_api_returns_only_validated_protocol_data(tmp_path: Path):
         assert analysis.status_code == 200
         assert analysis.json()["action_items"][0]["source_segment_ids"] == ["chunk-0001"]
         assert client.get(f"/jobs/{job_id}/analysis").json() == analysis.json()
+
+        edited_segment = client.put(f"/jobs/{job_id}/segments/chunk-0001", json={"text": "Исправленная реплика"})
+        assert edited_segment.status_code == 200
+        assert edited_segment.json()["text"] == "Исправленная реплика"
+        assert client.get(f"/jobs/{job_id}/analysis").status_code == 409
+
+        regenerated = client.post(f"/jobs/{job_id}/analysis")
+        edited_action = client.put(
+            f"/jobs/{job_id}/actions/0",
+            json={"description": "Подготовить отчёт", "assignee": "Алия", "deadline_text": "до пятницы", "deadline": None},
+        )
+        assert regenerated.status_code == 200
+        assert edited_action.status_code == 200
+        assert edited_action.json()["assignee"] == "Алия"
 
     app.state.jobs.shutdown()
 

@@ -26,6 +26,7 @@ type JobResponse = {
 
 const ACCEPTED_EXTENSIONS = [".mp3", ".wav", ".m4a", ".mp4"];
 const MAX_UPLOAD_BYTES = 1_073_741_824;
+const LAST_JOB_STORAGE_KEY = "hackalem:last-local-job-id";
 
 function isAccepted(file: File) {
   return ACCEPTED_EXTENSIONS.some((extension) => file.name.toLowerCase().endsWith(extension));
@@ -86,6 +87,10 @@ function isJobEvent(value: unknown): value is JobEvent {
     && typeof value.message === "string";
 }
 
+function isJobId(value: string | null): value is string {
+  return value !== null && /^[a-f0-9]{32}$/i.test(value);
+}
+
 export function RecordingUpload() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File>();
@@ -109,6 +114,37 @@ export function RecordingUpload() {
     if (Array.isArray(next.events)) setEvents(next.events.filter(isJobEvent));
     if (next.error) setError(next.error);
   }, []);
+
+  useEffect(() => {
+    if (!jobId) return;
+    window.localStorage.setItem(LAST_JOB_STORAGE_KEY, jobId);
+  }, [jobId]);
+
+  useEffect(() => {
+    const savedJobId = window.localStorage.getItem(LAST_JOB_STORAGE_KEY);
+    if (!isJobId(savedJobId)) return;
+    let current = true;
+    const restore = async () => {
+      try {
+        const response = await fetch(`/api/asr/jobs/${savedJobId}`, { cache: "no-store" });
+        const payload: unknown = await response.json().catch(() => ({}));
+        if (!current) return;
+        if (response.status === 404) {
+          window.localStorage.removeItem(LAST_JOB_STORAGE_KEY);
+          return;
+        }
+        if (!response.ok || typeof payload !== "object" || payload === null) return;
+        setJobId(savedJobId);
+        updateJobState(payload as JobResponse);
+      } catch {
+        // The saved result remains available when the local service is started again.
+      }
+    };
+    void restore();
+    return () => {
+      current = false;
+    };
+  }, [updateJobState]);
 
   useEffect(() => {
     if (!file) return;

@@ -89,7 +89,7 @@ class LocalOllamaProtocolAnalyzer:
             "stream": False,
             "think": False,
             "format": _PROTOCOL_JSON_SCHEMA,
-            "options": {"temperature": 0.1, "num_predict": 1_200},
+            "options": {"temperature": 0, "num_predict": 2_048, "seed": 0},
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": _build_transcript_prompt(segments)},
@@ -119,7 +119,9 @@ _SYSTEM_PROMPT = """Ты формируешь протокол совещани�
 ответственный или срок не назван явно, верни null. В каждом поручении укажи один
 или несколько идентификаторов исходных сегментов из списка. deadline заполняй
 только полной ISO-датой YYYY-MM-DD, иначе null; исходную формулировку срока
-сохрани в deadline_text. status всегда \"new\"."""
+сохрани в deadline_text. status всегда \"new\". Пиши компактно: summary не
+длиннее 1200 символов, не более 12 key_points и не более 20 action_items; у
+одного поручения description не длиннее 400 символов."""
 
 _PROTOCOL_JSON_SCHEMA = {
     "type": "object",

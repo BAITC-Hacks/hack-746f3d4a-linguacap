@@ -8,6 +8,7 @@ from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.analysis import (
+    ActionItem,
     DisabledProtocolAnalyzer,
     LocalModelUnavailableError,
     LocalOllamaProtocolAnalyzer,
@@ -20,6 +21,7 @@ from app.config import Settings, get_settings
 from app.diarization import LocalPyannoteDiarizer
 from app.jobs import Diarizer, Job, JobNotFoundError, Transcriber, TranscriptionJobManager
 from app.schemas import (
+    ActionItemResponse,
     AudioPreparationResponse,
     DeviceStatus,
     HealthResponse,
@@ -33,6 +35,8 @@ from app.schemas import (
     SpeakerResponse,
     TranscriptSegmentResponse,
     TranscriptionResultResponse,
+    UpdateActionRequest,
+    UpdateTranscriptSegmentRequest,
 )
 from app.transcription import LocalRukkTranscriber, TranscriptionError
 
@@ -93,7 +97,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=list(configured_settings.allowed_origins),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type"],
     )
 
@@ -237,6 +241,48 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return SpeakerResponse(id=speaker.speaker_id, display_name=speaker.display_name)
 
+    @app.put("/jobs/{job_id}/segments/{segment_id}", response_model=TranscriptSegmentResponse, tags=["transcription"])
+    def update_transcript_segment(job_id: str, segment_id: str, body: UpdateTranscriptSegmentRequest) -> TranscriptSegmentResponse:
+        try:
+            segment = app.state.jobs.update_segment(job_id, segment_id, body.text)
+        except JobNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Задание не найдено.") from error
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Сегмент не найден.") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail="Расшифровка ещё не готова.") from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return TranscriptSegmentResponse(
+            id=segment.segment_id,
+            start_seconds=round(segment.start_seconds, 3),
+            end_seconds=round(segment.end_seconds, 3),
+            text=segment.text,
+            speaker_id=segment.speaker_id,
+            speaker_name=segment.speaker_name,
+        )
+
+    @app.put("/jobs/{job_id}/actions/{action_index}", response_model=ActionItemResponse, tags=["analysis"])
+    def update_action(job_id: str, action_index: int, body: UpdateActionRequest) -> ActionItemResponse:
+        try:
+            action = app.state.jobs.update_action(
+                job_id,
+                action_index,
+                description=body.description,
+                assignee=body.assignee,
+                deadline_text=body.deadline_text,
+                deadline=body.deadline,
+            )
+        except JobNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Задание не найдено.") from error
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Поручение не найдено.") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail="Протокол ещё не сформирован.") from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return _action_response(action)
+
     @app.delete("/jobs/{job_id}", status_code=204, tags=["transcription"])
     def delete_job(job_id: str) -> Response:
         try:
@@ -255,18 +301,19 @@ def _protocol_response(protocol: MeetingProtocol) -> MeetingProtocolResponse:
         title=protocol.title,
         summary=protocol.summary,
         key_points=list(protocol.key_points),
-        action_items=[
-            {
-                "description": item.description,
-                "assignee": item.assignee,
-                "deadline_text": item.deadline_text,
-                "deadline": item.deadline,
-                "source_segment_ids": list(item.source_segment_ids),
-                "confidence": item.confidence,
-                "status": item.status,
-            }
-            for item in protocol.action_items
-        ],
+        action_items=[_action_response(item) for item in protocol.action_items],
+    )
+
+
+def _action_response(item: ActionItem) -> ActionItemResponse:
+    return ActionItemResponse(
+        description=item.description,
+        assignee=item.assignee,
+        deadline_text=item.deadline_text,
+        deadline=item.deadline,
+        source_segment_ids=list(item.source_segment_ids),
+        confidence=item.confidence,
+        status=item.status,
     )
 
 
