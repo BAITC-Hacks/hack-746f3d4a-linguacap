@@ -25,6 +25,8 @@ services/asr/runtime/
 
 # Meeting recordings and source documents (not for publication)
 ТЗ/
+protocol.pdf
+screensh*.png
 
 # logs and operating-system files
 *.log
