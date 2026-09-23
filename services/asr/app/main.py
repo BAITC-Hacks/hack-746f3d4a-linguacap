@@ -7,6 +7,14 @@ import shutil
 from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.analysis import (
+    DisabledProtocolAnalyzer,
+    LocalModelUnavailableError,
+    LocalOllamaProtocolAnalyzer,
+    MeetingProtocol,
+    ProtocolAnalysisError,
+    ProtocolAnalyzer,
+)
 from app.audio import AudioProcessingError, AudioValidationError, cleanup_workspace, create_workspace, extension_for_upload, prepare_audio, store_upload
 from app.config import Settings, get_settings
 from app.diarization import LocalPyannoteDiarizer
@@ -16,6 +24,7 @@ from app.schemas import (
     DeviceStatus,
     HealthResponse,
     JobResponse,
+    MeetingProtocolResponse,
     ModelStatus,
     PreparedAudioChunk,
     PreparedAudioFormat,
@@ -42,7 +51,10 @@ def _job_response(job_id: str, state: str, error: str | None) -> JobResponse:
 
 
 def create_app(
-    settings: Settings | None = None, transcriber: Transcriber | None = None, diarizer: Diarizer | None = None
+    settings: Settings | None = None,
+    transcriber: Transcriber | None = None,
+    diarizer: Diarizer | None = None,
+    analyzer: ProtocolAnalyzer | None = None,
 ) -> FastAPI:
     """Build an app instance; injectable settings keep tests isolated."""
     configured_settings = settings or get_settings()
@@ -54,7 +66,12 @@ def create_app(
     app.state.settings = configured_settings
     transcription_engine = transcriber or LocalRukkTranscriber(configured_settings)
     diarization_engine = diarizer or LocalPyannoteDiarizer(configured_settings)
-    app.state.jobs = TranscriptionJobManager(configured_settings, transcription_engine, diarization_engine)
+    analysis_engine = analyzer or (
+        LocalOllamaProtocolAnalyzer(configured_settings)
+        if configured_settings.local_llm_provider == "ollama"
+        else DisabledProtocolAnalyzer()
+    )
+    app.state.jobs = TranscriptionJobManager(configured_settings, transcription_engine, diarization_engine, analysis_engine)
     app.state.asr_startup_error = None
     if isinstance(transcription_engine, LocalRukkTranscriber) and transcription_engine.is_installed:
         try:
@@ -171,6 +188,30 @@ def create_app(
             speakers=[SpeakerResponse(id=speaker.speaker_id, display_name=speaker.display_name) for speaker in result.speakers],
         )
 
+    @app.post("/jobs/{job_id}/analysis", response_model=MeetingProtocolResponse, tags=["analysis"])
+    def analyze_transcript(job_id: str) -> MeetingProtocolResponse:
+        try:
+            protocol = app.state.jobs.analyze(job_id)
+        except JobNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Задание не найдено.") from error
+        except LocalModelUnavailableError as error:
+            raise HTTPException(status_code=503, detail="Локальная LLM не настроена.") from error
+        except ProtocolAnalysisError as error:
+            raise HTTPException(status_code=422, detail="Локальная LLM вернула некорректный протокол.") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail="Расшифровка ещё не готова.") from error
+        return _protocol_response(protocol)
+
+    @app.get("/jobs/{job_id}/analysis", response_model=MeetingProtocolResponse, tags=["analysis"])
+    def get_analysis(job_id: str) -> MeetingProtocolResponse:
+        try:
+            protocol = app.state.jobs.analysis_for(job_id)
+        except JobNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Задание не найдено.") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail="Протокол ещё не сформирован.") from error
+        return _protocol_response(protocol)
+
     @app.post("/jobs/{job_id}/speakers/{speaker_id}", response_model=SpeakerResponse, tags=["diarization"])
     def rename_speaker(job_id: str, speaker_id: str, body: RenameSpeakerRequest) -> SpeakerResponse:
         try:
@@ -196,6 +237,26 @@ def create_app(
         return Response(status_code=204)
 
     return app
+
+
+def _protocol_response(protocol: MeetingProtocol) -> MeetingProtocolResponse:
+    return MeetingProtocolResponse(
+        title=protocol.title,
+        summary=protocol.summary,
+        key_points=list(protocol.key_points),
+        action_items=[
+            {
+                "description": item.description,
+                "assignee": item.assignee,
+                "deadline_text": item.deadline_text,
+                "deadline": item.deadline,
+                "source_segment_ids": list(item.source_segment_ids),
+                "confidence": item.confidence,
+                "status": item.status,
+            }
+            for item in protocol.action_items
+        ],
+    )
 
 
 app = create_app()

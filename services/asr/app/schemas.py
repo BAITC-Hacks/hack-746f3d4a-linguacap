@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel
@@ -73,3 +74,20 @@ class TranscriptionResultResponse(BaseModel):
     text: str
     segments: list[TranscriptSegmentResponse]
     speakers: list[SpeakerResponse]
+
+
+class ActionItemResponse(BaseModel):
+    description: str
+    assignee: str | None
+    deadline_text: str | None
+    deadline: date | None
+    source_segment_ids: list[str]
+    confidence: float
+    status: Literal["new"]
+
+
+class MeetingProtocolResponse(BaseModel):
+    title: str
+    summary: str
+    key_points: list[str]
+    action_items: list[ActionItemResponse]

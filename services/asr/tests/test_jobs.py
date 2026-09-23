@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.analysis import ActionItem, MeetingProtocol, ProtocolSourceSegment
 from app.config import Settings
 from app.diarization import SpeakerTurn
 from app.jobs import TranscriptSegment, TranscriptionJobManager, merge_segment_text
@@ -28,6 +29,31 @@ class FakeDiarizer:
     def diarize(self, wav_path: Path) -> tuple[SpeakerTurn, ...]:
         assert wav_path.is_file()
         return (SpeakerTurn("SPEAKER_01", 0, 2),)
+
+
+class FakeAnalyzer:
+    @property
+    def is_configured(self) -> bool:
+        return True
+
+    def analyze(self, segments: tuple[ProtocolSourceSegment, ...]) -> MeetingProtocol:
+        assert segments[0].segment_id == "chunk-0001"
+        assert segments[0].speaker_name == "Спикер 1"
+        return MeetingProtocol(
+            title="Планирование",
+            summary="Обсудили план.",
+            key_points=("Нужен отчёт.",),
+            action_items=(
+                ActionItem(
+                    description="Подготовить отчёт",
+                    assignee=None,
+                    deadline_text="до пятницы",
+                    deadline=None,
+                    source_segment_ids=("chunk-0001",),
+                    confidence=0.8,
+                ),
+            ),
+        )
 
 
 def write_speech_like_wav(path: Path) -> None:
@@ -135,3 +161,58 @@ def test_diarization_speaker_is_attached_and_can_be_renamed(tmp_path: Path):
     assert manager.result_for(job.job_id).segments[0].speaker_name == "Ерлан"
     manager.delete(job.job_id)
     manager.shutdown()
+
+
+def test_completed_transcript_can_be_analyzed_with_source_segment_links(tmp_path: Path):
+    settings = job_settings(tmp_path)
+    manager = TranscriptionJobManager(settings, FakeTranscriber(), FakeDiarizer(), FakeAnalyzer())
+    job = manager.create()
+    source = job.workspace / "source.wav"
+    write_speech_like_wav(source)
+
+    manager.submit(job.job_id, source)
+    assert job.future is not None
+    job.future.result(timeout=10)
+
+    protocol = manager.analyze(job.job_id)
+    assert protocol.action_items[0].source_segment_ids == ("chunk-0001",)
+    assert manager.analysis_for(job.job_id) == protocol
+    manager.delete(job.job_id)
+    manager.shutdown()
+
+
+def test_analysis_api_returns_only_validated_protocol_data(tmp_path: Path):
+    settings = job_settings(tmp_path)
+    source = tmp_path / "meeting.wav"
+    write_speech_like_wav(source)
+    app = create_app(settings, FakeTranscriber(), FakeDiarizer(), FakeAnalyzer())
+
+    with TestClient(app) as client, source.open("rb") as audio_file:
+        created = client.post("/transcribe", files={"file": ("meeting.wav", audio_file, "audio/wav")})
+        job_id = created.json()["id"]
+        app.state.jobs.get(job_id).future.result(timeout=10)
+
+        analysis = client.post(f"/jobs/{job_id}/analysis")
+        assert analysis.status_code == 200
+        assert analysis.json()["action_items"][0]["source_segment_ids"] == ["chunk-0001"]
+        assert client.get(f"/jobs/{job_id}/analysis").json() == analysis.json()
+
+    app.state.jobs.shutdown()
+
+
+def test_analysis_api_does_not_send_a_transcript_when_no_local_model_is_configured(tmp_path: Path):
+    settings = job_settings(tmp_path)
+    source = tmp_path / "meeting.wav"
+    write_speech_like_wav(source)
+    app = create_app(settings, FakeTranscriber(), FakeDiarizer())
+
+    with TestClient(app) as client, source.open("rb") as audio_file:
+        created = client.post("/transcribe", files={"file": ("meeting.wav", audio_file, "audio/wav")})
+        job_id = created.json()["id"]
+        app.state.jobs.get(job_id).future.result(timeout=10)
+
+        analysis = client.post(f"/jobs/{job_id}/analysis")
+        assert analysis.status_code == 503
+        assert analysis.json()["detail"] == "Локальная LLM не настроена."
+
+    app.state.jobs.shutdown()

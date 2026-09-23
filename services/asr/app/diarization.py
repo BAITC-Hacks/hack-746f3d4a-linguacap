@@ -49,10 +49,9 @@ class LocalPyannoteDiarizer:
             # The pipeline receives an in-memory waveform below, so it does not
             # call TorchCodec to decode the audio path.
             with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message=".*torchcodec.*")
+                warnings.filterwarnings("ignore", message=r"(?s).*torchcodec.*")
                 from pyannote.audio import Pipeline
-
-            self._pipeline = Pipeline.from_pretrained(str(self.model_path))
+                self._pipeline = Pipeline.from_pretrained(str(self.model_path))
         except Exception as error:
             raise DiarizationError("Локальная модель диаризации не загрузилась.") from error
 

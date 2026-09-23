@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 SUPPORTED_DEVICES = frozenset({"auto", "mps", "cpu"})
+SUPPORTED_LOCAL_LLM_PROVIDERS = frozenset({"disabled", "ollama"})
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 # NeMo and other Torch operators use this to fall back to CPU when Metal lacks
@@ -66,6 +69,14 @@ def _positive_float(value: str, *, name: str, allow_zero: bool = False) -> float
     return parsed
 
 
+def _local_runtime_url(value: str) -> str:
+    """Allow a local LLM bridge only on loopback, never an external endpoint."""
+    parsed = urlsplit(value.strip())
+    if parsed.scheme != "http" or parsed.hostname not in LOCAL_HOSTS or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("ASR_LOCAL_LLM_BASE_URL must be an http loopback URL without credentials.")
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+
+
 def resolve_device(requested_device: str) -> tuple[str, str | None]:
     """Select the safe device and explain an automatic fallback, if any."""
     if requested_device == "cpu":
@@ -102,6 +113,10 @@ class Settings:
     vad_threshold_db: float = -45.0
     vad_min_speech_seconds: float = 0.3
     vad_min_silence_seconds: float = 0.5
+    local_llm_provider: str = "disabled"
+    local_llm_base_url: str = "http://127.0.0.1:11434"
+    local_llm_model: str | None = None
+    local_llm_timeout_seconds: int = 180
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -110,6 +125,13 @@ class Settings:
         if requested_device not in SUPPORTED_DEVICES:
             accepted = ", ".join(sorted(SUPPORTED_DEVICES))
             raise ValueError(f"ASR_DEVICE must be one of: {accepted}.")
+        local_llm_provider = env.get("ASR_LOCAL_LLM_PROVIDER", "disabled").strip().lower()
+        if local_llm_provider not in SUPPORTED_LOCAL_LLM_PROVIDERS:
+            accepted = ", ".join(sorted(SUPPORTED_LOCAL_LLM_PROVIDERS))
+            raise ValueError(f"ASR_LOCAL_LLM_PROVIDER must be one of: {accepted}.")
+        local_llm_model = env.get("ASR_LOCAL_LLM_MODEL", "").strip() or None
+        if local_llm_provider == "ollama" and not local_llm_model:
+            raise ValueError("ASR_LOCAL_LLM_MODEL is required when ASR_LOCAL_LLM_PROVIDER=ollama.")
 
         models_dir = _path_from_env(env.get("ASR_MODELS_DIR", "models"), base_dir=SERVICE_ROOT)
         selected_device, fallback_reason = resolve_device(requested_device)
@@ -132,6 +154,12 @@ class Settings:
             nemo_model_dir=_path_from_env(env.get("ASR_NEMO_MODEL_DIR", str(models_dir / "nemo")), base_dir=SERVICE_ROOT),
             diarization_model_dir=_path_from_env(env.get("ASR_DIARIZATION_MODEL_DIR", str(models_dir / "diarization")), base_dir=SERVICE_ROOT),
             llm_model_dir=_path_from_env(env.get("ASR_LLM_MODEL_DIR", str(models_dir / "llm")), base_dir=SERVICE_ROOT),
+            local_llm_provider=local_llm_provider,
+            local_llm_base_url=_local_runtime_url(env.get("ASR_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434")),
+            local_llm_model=local_llm_model,
+            local_llm_timeout_seconds=_positive_int(
+                env.get("ASR_LOCAL_LLM_TIMEOUT_SECONDS", "180"), name="ASR_LOCAL_LLM_TIMEOUT_SECONDS"
+            ),
             requested_device=requested_device,
             selected_device=selected_device,
             device_fallback_reason=fallback_reason,

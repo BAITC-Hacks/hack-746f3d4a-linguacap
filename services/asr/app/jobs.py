@@ -11,6 +11,12 @@ from time import time
 from typing import Protocol
 from uuid import uuid4
 
+from app.analysis import (
+    DisabledProtocolAnalyzer,
+    MeetingProtocol,
+    ProtocolAnalyzer,
+    ProtocolSourceSegment,
+)
 from app.audio import AudioProcessingError, cleanup_workspace, prepare_audio
 from app.config import Settings
 from app.diarization import DiarizationError, LocalPyannoteDiarizer, SpeakerTurn, speaker_for_interval
@@ -63,6 +69,7 @@ class Job:
     finished_at: float | None = None
     error: str | None = None
     result: TranscriptionResult | None = None
+    analysis: MeetingProtocol | None = None
     cancel_requested: bool = False
     future: Future[None] | None = None
 
@@ -72,10 +79,17 @@ class JobNotFoundError(KeyError):
 
 
 class TranscriptionJobManager:
-    def __init__(self, settings: Settings, transcriber: Transcriber | None = None, diarizer: Diarizer | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        transcriber: Transcriber | None = None,
+        diarizer: Diarizer | None = None,
+        analyzer: ProtocolAnalyzer | None = None,
+    ) -> None:
         self._settings = settings
         self._transcriber = transcriber or LocalRukkTranscriber(settings)
         self._diarizer = diarizer
+        self._analyzer = analyzer or DisabledProtocolAnalyzer()
         self._jobs: dict[str, Job] = {}
         self._lock = RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-asr")
@@ -104,6 +118,38 @@ class TranscriptionJobManager:
             if job.state != "completed" or job.result is None:
                 raise RuntimeError("The job has not completed.")
             return job.result
+
+    def analyze(self, job_id: str) -> MeetingProtocol:
+        """Analyze only a completed in-memory transcript using a local analyzer."""
+        with self._lock:
+            job = self._get(job_id)
+            if job.state != "completed" or job.result is None:
+                raise RuntimeError("The job has not completed.")
+            segments = tuple(
+                ProtocolSourceSegment(
+                    segment_id=segment.segment_id,
+                    start_seconds=segment.start_seconds,
+                    end_seconds=segment.end_seconds,
+                    text=segment.text,
+                    speaker_name=segment.speaker_name,
+                )
+                for segment in job.result.segments
+            )
+
+        protocol = self._analyzer.analyze(segments)
+        with self._lock:
+            job = self._get(job_id)
+            if job.state != "completed" or job.result is None:
+                raise RuntimeError("The job is no longer available.")
+            job.analysis = protocol
+        return protocol
+
+    def analysis_for(self, job_id: str) -> MeetingProtocol:
+        with self._lock:
+            job = self._get(job_id)
+            if job.analysis is None:
+                raise RuntimeError("The analysis has not completed.")
+            return job.analysis
 
     def rename_speaker(self, job_id: str, speaker_id: str, display_name: str) -> Speaker:
         cleaned_name = display_name.strip()

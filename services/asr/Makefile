@@ -1,6 +1,6 @@
 NEMO_VENV := .venv-nemo
 
-.PHONY: install install-nemo install-diarization download-rukk download-nemo benchmark-rukk benchmark-nemo dev test
+.PHONY: install install-nemo install-diarization download-rukk download-nemo download-pyannote benchmark-rukk benchmark-nemo dev dev-full test
 
 install:
 	python3 -m pip install --upgrade pip
@@ -19,6 +19,9 @@ download-rukk:
 download-nemo:
 	$(NEMO_VENV)/bin/python -m app.model_download nemo
 
+download-pyannote:
+	$(NEMO_VENV)/bin/python -m app.model_download pyannote
+
 benchmark-rukk:
 	python3 -m app.benchmark rukk $(RECORDING)
 
@@ -27,6 +30,9 @@ benchmark-nemo:
 
 dev:
 	python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+dev-full:
+	$(NEMO_VENV)/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 test:
 	python3 -m pytest -q
