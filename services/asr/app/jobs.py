@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 from pathlib import Path
 from threading import RLock
@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from app.audio import AudioProcessingError, cleanup_workspace, prepare_audio
 from app.config import Settings
+from app.diarization import DiarizationError, LocalPyannoteDiarizer, SpeakerTurn, speaker_for_interval
 from app.transcription import LocalRukkTranscriber, TranscriptionError
 
 logger = logging.getLogger(__name__)
@@ -22,18 +23,34 @@ class Transcriber(Protocol):
     def transcribe(self, wav_path: Path) -> str: ...
 
 
+class Diarizer(Protocol):
+    @property
+    def is_installed(self) -> bool: ...
+
+    def diarize(self, wav_path: Path) -> tuple[SpeakerTurn, ...]: ...
+
+
 @dataclass(frozen=True)
 class TranscriptSegment:
     segment_id: str
     start_seconds: float
     end_seconds: float
     text: str
+    speaker_id: str | None = None
+    speaker_name: str | None = None
+
+
+@dataclass(frozen=True)
+class Speaker:
+    speaker_id: str
+    display_name: str
 
 
 @dataclass(frozen=True)
 class TranscriptionResult:
     segments: tuple[TranscriptSegment, ...]
     text: str
+    speakers: tuple[Speaker, ...] = ()
 
 
 @dataclass
@@ -55,9 +72,10 @@ class JobNotFoundError(KeyError):
 
 
 class TranscriptionJobManager:
-    def __init__(self, settings: Settings, transcriber: Transcriber | None = None) -> None:
+    def __init__(self, settings: Settings, transcriber: Transcriber | None = None, diarizer: Diarizer | None = None) -> None:
         self._settings = settings
         self._transcriber = transcriber or LocalRukkTranscriber(settings)
+        self._diarizer = diarizer
         self._jobs: dict[str, Job] = {}
         self._lock = RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-asr")
@@ -86,6 +104,28 @@ class TranscriptionJobManager:
             if job.state != "completed" or job.result is None:
                 raise RuntimeError("The job has not completed.")
             return job.result
+
+    def rename_speaker(self, job_id: str, speaker_id: str, display_name: str) -> Speaker:
+        cleaned_name = display_name.strip()
+        if not cleaned_name or len(cleaned_name) > 100:
+            raise ValueError("Имя спикера должно содержать от 1 до 100 символов.")
+        with self._lock:
+            job = self._get(job_id)
+            if job.state != "completed" or job.result is None:
+                raise RuntimeError("The job has not completed.")
+            matching = next((speaker for speaker in job.result.speakers if speaker.speaker_id == speaker_id), None)
+            if matching is None:
+                raise KeyError(speaker_id)
+            renamed = Speaker(speaker_id, cleaned_name)
+            job.result = TranscriptionResult(
+                segments=tuple(
+                    replace(segment, speaker_name=cleaned_name) if segment.speaker_id == speaker_id else segment
+                    for segment in job.result.segments
+                ),
+                text=job.result.text,
+                speakers=tuple(renamed if speaker.speaker_id == speaker_id else speaker for speaker in job.result.speakers),
+            )
+            return renamed
 
     def delete(self, job_id: str) -> bool:
         with self._lock:
@@ -133,13 +173,26 @@ class TranscriptionJobManager:
 
         try:
             prepared = prepare_audio(source_path, job.workspace, self._settings)
+            turns = self._diarizer.diarize(prepared.normalized_path) if self._diarizer and self._diarizer.is_installed else ()
+            speakers = tuple(Speaker(turn.speaker_id, f"Спикер {index}") for index, turn in enumerate(_first_turns(turns), start=1))
+            speaker_names = {speaker.speaker_id: speaker.display_name for speaker in speakers}
             segments: list[TranscriptSegment] = []
             for chunk in prepared.chunks:
                 if self._is_cancelled(job_id):
                     return
                 text = self._transcriber.transcribe(chunk.path)
-                segments.append(TranscriptSegment(chunk.chunk_id, chunk.start_seconds, chunk.end_seconds, text))
-            result = TranscriptionResult(tuple(segments), merge_segment_text(segments))
+                speaker_id = speaker_for_interval(chunk.start_seconds, chunk.end_seconds, turns)
+                segments.append(
+                    TranscriptSegment(
+                        chunk.chunk_id,
+                        chunk.start_seconds,
+                        chunk.end_seconds,
+                        text,
+                        speaker_id=speaker_id,
+                        speaker_name=speaker_names.get(speaker_id),
+                    )
+                )
+            result = TranscriptionResult(tuple(segments), merge_segment_text(segments), speakers)
             with self._lock:
                 job = self._get(job_id)
                 if not job.cancel_requested:
@@ -151,7 +204,7 @@ class TranscriptionJobManager:
                         round((time() - job.started_at) * 1_000) if job.started_at else 0,
                         len(segments),
                     )
-        except (AudioProcessingError, TranscriptionError):
+        except (AudioProcessingError, DiarizationError, TranscriptionError):
             with self._lock:
                 job = self._get(job_id)
                 if not job.cancel_requested:
@@ -182,3 +235,11 @@ def merge_segment_text(segments: list[TranscriptSegment]) -> str:
                 break
         merged_words.extend(words[overlap:])
     return " ".join(merged_words)
+
+
+def _first_turns(turns: tuple[SpeakerTurn, ...]) -> tuple[SpeakerTurn, ...]:
+    """Keep one chronology-defining turn per normalized speaker."""
+    first_turns: dict[str, SpeakerTurn] = {}
+    for turn in turns:
+        first_turns.setdefault(turn.speaker_id, turn)
+    return tuple(first_turns.values())

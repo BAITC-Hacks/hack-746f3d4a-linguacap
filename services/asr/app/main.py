@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.audio import AudioProcessingError, AudioValidationError, cleanup_workspace, create_workspace, extension_for_upload, prepare_audio, store_upload
 from app.config import Settings, get_settings
-from app.jobs import JobNotFoundError, Transcriber, TranscriptionJobManager
+from app.diarization import LocalPyannoteDiarizer
+from app.jobs import Diarizer, JobNotFoundError, Transcriber, TranscriptionJobManager
 from app.schemas import (
     AudioPreparationResponse,
     DeviceStatus,
@@ -18,6 +19,8 @@ from app.schemas import (
     ModelStatus,
     PreparedAudioChunk,
     PreparedAudioFormat,
+    RenameSpeakerRequest,
+    SpeakerResponse,
     TranscriptSegmentResponse,
     TranscriptionResultResponse,
 )
@@ -38,7 +41,9 @@ def _job_response(job_id: str, state: str, error: str | None) -> JobResponse:
     return JobResponse(id=job_id, status=state, error=error)
 
 
-def create_app(settings: Settings | None = None, transcriber: Transcriber | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, transcriber: Transcriber | None = None, diarizer: Diarizer | None = None
+) -> FastAPI:
     """Build an app instance; injectable settings keep tests isolated."""
     configured_settings = settings or get_settings()
     app = FastAPI(
@@ -48,7 +53,8 @@ def create_app(settings: Settings | None = None, transcriber: Transcriber | None
     )
     app.state.settings = configured_settings
     transcription_engine = transcriber or LocalRukkTranscriber(configured_settings)
-    app.state.jobs = TranscriptionJobManager(configured_settings, transcription_engine)
+    diarization_engine = diarizer or LocalPyannoteDiarizer(configured_settings)
+    app.state.jobs = TranscriptionJobManager(configured_settings, transcription_engine, diarization_engine)
     app.state.asr_startup_error = None
     if isinstance(transcription_engine, LocalRukkTranscriber) and transcription_engine.is_installed:
         try:
@@ -76,6 +82,7 @@ def create_app(settings: Settings | None = None, transcriber: Transcriber | None
             ffmpeg="available" if shutil.which(configured_settings.ffmpeg_binary) else "not_found",
             models={
                 "asr_rukk": _model_status(str(configured_settings.rukk_model_dir)),
+                "asr_nemo": _model_status(str(configured_settings.nemo_model_dir)),
                 "diarization": _model_status(str(configured_settings.diarization_model_dir)),
                 "llm": _model_status(str(configured_settings.llm_model_dir)),
             },
@@ -156,10 +163,27 @@ def create_app(settings: Settings | None = None, transcriber: Transcriber | None
                     start_seconds=round(segment.start_seconds, 3),
                     end_seconds=round(segment.end_seconds, 3),
                     text=segment.text,
+                    speaker_id=segment.speaker_id,
+                    speaker_name=segment.speaker_name,
                 )
                 for segment in result.segments
             ],
+            speakers=[SpeakerResponse(id=speaker.speaker_id, display_name=speaker.display_name) for speaker in result.speakers],
         )
+
+    @app.post("/jobs/{job_id}/speakers/{speaker_id}", response_model=SpeakerResponse, tags=["diarization"])
+    def rename_speaker(job_id: str, speaker_id: str, body: RenameSpeakerRequest) -> SpeakerResponse:
+        try:
+            speaker = app.state.jobs.rename_speaker(job_id, speaker_id, body.display_name)
+        except JobNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Задание не найдено.") from error
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Спикер не найден.") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail="Результат ещё не готов.") from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return SpeakerResponse(id=speaker.speaker_id, display_name=speaker.display_name)
 
     @app.delete("/jobs/{job_id}", status_code=204, tags=["transcription"])
     def delete_job(job_id: str) -> Response:

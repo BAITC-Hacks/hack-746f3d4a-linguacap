@@ -1,7 +1,9 @@
 # Runtime and test dependencies for the Stage 1 service. Keep these pinned so a
 # demonstration environment can be reproduced without resolving new releases.
 fastapi==0.115.12
-huggingface_hub==0.30.2
+# NeMo's pinned Transformers runtime requires Hugging Face Hub >= 0.34.
+# The model downloader uses a stable API shared by this version.
+huggingface_hub==0.36.2
 httpx==0.28.1
 numpy==2.3.0
 pytest==8.3.5

@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.diarization import SpeakerTurn
 from app.jobs import TranscriptSegment, TranscriptionJobManager, merge_segment_text
 from app.main import create_app
 
@@ -17,6 +18,16 @@ class FakeTranscriber:
         assert wav_path.is_file()
         self.calls += 1
         return "тестовая расшифровка"
+
+
+class FakeDiarizer:
+    @property
+    def is_installed(self) -> bool:
+        return True
+
+    def diarize(self, wav_path: Path) -> tuple[SpeakerTurn, ...]:
+        assert wav_path.is_file()
+        return (SpeakerTurn("SPEAKER_01", 0, 2),)
 
 
 def write_speech_like_wav(path: Path) -> None:
@@ -72,7 +83,7 @@ def test_transcription_api_exposes_status_result_and_deletion(tmp_path: Path):
     transcriber = FakeTranscriber()
     source = tmp_path / "meeting.wav"
     write_speech_like_wav(source)
-    app = create_app(settings, transcriber)
+    app = create_app(settings, transcriber, FakeDiarizer())
 
     with TestClient(app) as client, source.open("rb") as audio_file:
         created = client.post("/transcribe", files={"file": ("meeting.wav", audio_file, "audio/wav")})
@@ -85,6 +96,10 @@ def test_transcription_api_exposes_status_result_and_deletion(tmp_path: Path):
         result = client.get(f"/jobs/{job_id}/result")
         assert result.status_code == 200
         assert result.json()["segments"][0]["text"] == "тестовая расшифровка"
+        assert result.json()["speakers"] == [{"id": "SPEAKER_01", "display_name": "Спикер 1"}]
+        renamed = client.post(f"/jobs/{job_id}/speakers/SPEAKER_01", json={"display_name": "Алия"})
+        assert renamed.status_code == 200
+        assert renamed.json() == {"id": "SPEAKER_01", "display_name": "Алия"}
         deleted = client.delete(f"/jobs/{job_id}")
         assert deleted.status_code == 204
 
@@ -98,3 +113,25 @@ def test_merge_segment_text_removes_overlap_only_at_the_boundary():
     ]
 
     assert merge_segment_text(segments) == "подготовить отчёт до пятницы и направить директору"
+
+
+def test_diarization_speaker_is_attached_and_can_be_renamed(tmp_path: Path):
+    settings = job_settings(tmp_path)
+    manager = TranscriptionJobManager(settings, FakeTranscriber(), FakeDiarizer())
+    job = manager.create()
+    source = job.workspace / "source.wav"
+    write_speech_like_wav(source)
+
+    manager.submit(job.job_id, source)
+    assert job.future is not None
+    job.future.result(timeout=10)
+
+    result = manager.result_for(job.job_id)
+    assert result.speakers[0].display_name == "Спикер 1"
+    assert result.segments[0].speaker_id == "SPEAKER_01"
+
+    speaker = manager.rename_speaker(job.job_id, "SPEAKER_01", "Ерлан")
+    assert speaker.display_name == "Ерлан"
+    assert manager.result_for(job.job_id).segments[0].speaker_name == "Ерлан"
+    manager.delete(job.job_id)
+    manager.shutdown()

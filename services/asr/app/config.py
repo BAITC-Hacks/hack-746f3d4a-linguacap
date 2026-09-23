@@ -12,6 +12,10 @@ from typing import Mapping
 SUPPORTED_DEVICES = frozenset({"auto", "mps", "cpu"})
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
+# NeMo and other Torch operators use this to fall back to CPU when Metal lacks
+# an operation. It is harmless on CPU-only hosts.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 
 def _path_from_env(value: str, *, base_dir: Path) -> Path:
     """Resolve a configured path without requiring the directory to exist."""
@@ -88,6 +92,7 @@ class Settings:
     device_fallback_reason: str | None
     ffmpeg_binary: str
     allowed_origins: tuple[str, ...]
+    nemo_model_dir: Path = SERVICE_ROOT / "models" / "nemo"
     ffprobe_binary: str = "ffprobe"
     runtime_dir: Path = SERVICE_ROOT / "runtime"
     max_upload_bytes: int = 1_073_741_824
@@ -124,6 +129,7 @@ class Settings:
             service_root=SERVICE_ROOT,
             models_dir=models_dir,
             rukk_model_dir=_path_from_env(env.get("ASR_RUKK_MODEL_DIR", str(models_dir / "asr" / "rukk")), base_dir=SERVICE_ROOT),
+            nemo_model_dir=_path_from_env(env.get("ASR_NEMO_MODEL_DIR", str(models_dir / "nemo")), base_dir=SERVICE_ROOT),
             diarization_model_dir=_path_from_env(env.get("ASR_DIARIZATION_MODEL_DIR", str(models_dir / "diarization")), base_dir=SERVICE_ROOT),
             llm_model_dir=_path_from_env(env.get("ASR_LLM_MODEL_DIR", str(models_dir / "llm")), base_dir=SERVICE_ROOT),
             requested_device=requested_device,

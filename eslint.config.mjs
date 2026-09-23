@@ -5,7 +5,14 @@ const config = [
   ...nextCoreWebVitals,
   ...nextTypeScript,
   {
-    ignores: [".next/**", "next-env.d.ts", "node_modules/**", "out/**", "services/asr/.venv/**"],
+    ignores: [
+      ".next/**",
+      "next-env.d.ts",
+      "node_modules/**",
+      "out/**",
+      "services/asr/.venv/**",
+      "services/asr/.venv-nemo/**",
+    ],
   },
 ];
 

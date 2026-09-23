@@ -14,6 +14,7 @@ def test_health_reports_local_runtime_state(tmp_path):
         service_root=tmp_path,
         models_dir=models_dir,
         rukk_model_dir=rukk_dir,
+        nemo_model_dir=models_dir / "nemo",
         diarization_model_dir=models_dir / "diarization",
         llm_model_dir=models_dir / "llm",
         requested_device="cpu",
@@ -34,6 +35,7 @@ def test_health_reports_local_runtime_state(tmp_path):
         "ffmpeg": "not_found",
         "models": {
             "asr_rukk": {"state": "available", "path": str(rukk_dir)},
+            "asr_nemo": {"state": "not_downloaded", "path": str(models_dir / "nemo")},
             "diarization": {"state": "not_downloaded", "path": str(models_dir / "diarization")},
             "llm": {"state": "not_downloaded", "path": str(models_dir / "llm")},
         },

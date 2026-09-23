@@ -56,8 +56,20 @@ class TranscriptSegmentResponse(BaseModel):
     start_seconds: float
     end_seconds: float
     text: str
+    speaker_id: str | None = None
+    speaker_name: str | None = None
+
+
+class SpeakerResponse(BaseModel):
+    id: str
+    display_name: str
+
+
+class RenameSpeakerRequest(BaseModel):
+    display_name: str
 
 
 class TranscriptionResultResponse(BaseModel):
     text: str
     segments: list[TranscriptSegmentResponse]
+    speakers: list[SpeakerResponse]

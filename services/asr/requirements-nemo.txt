@@ -1,0 +1,2 @@
+# Optional Stage 4 comparison runtime. Kept separate from the MVP ASR path.
+nemo_toolkit[asr]==2.7.3

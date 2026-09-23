@@ -13,6 +13,7 @@ out/
 
 # Local ASR service runtime files and model weights
 services/asr/.venv/
+services/asr/.venv-nemo/
 services/asr/.env
 services/asr/models/*
 !services/asr/models/.gitkeep

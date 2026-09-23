@@ -1,0 +1,6 @@
+# Optional Stage 5 local speaker-diarization runtime.
+# The gated model weights are downloaded manually after the project owner accepts
+# the model terms; no access token is stored by the service.
+pyannote.audio==4.0.7
+# PyTorch 2.10 requires the matching TorchCodec ABI (0.16 needs PyTorch 2.11+).
+torchcodec==0.10.0
