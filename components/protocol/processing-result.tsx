@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, ClipboardList, FileText, LoaderCircle, MessageSquareText, PencilLine } from "lucide-react";
+import { AlertCircle, ClipboardList, Download, FileText, LoaderCircle, MessageSquareText, PencilLine } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -37,7 +37,7 @@ type MeetingProtocol = {
   action_items: ActionItem[];
 };
 
-type Tab = "summary" | "actions" | "transcript";
+type Tab = "summary" | "actions" | "transcript" | "export";
 type AnalysisState = "idle" | "loading" | "ready" | "error";
 
 function timestamp(seconds: number) {
@@ -318,6 +318,81 @@ function TranscriptSegmentEditor({
   );
 }
 
+function ExportPanel({
+  jobId,
+  protocol,
+  analysisState,
+  onCreate,
+}: {
+  jobId: string;
+  protocol?: MeetingProtocol;
+  analysisState: AnalysisState;
+  onCreate: () => void;
+}) {
+  const [downloading, setDownloading] = useState<"docx" | "pdf">();
+  const [error, setError] = useState<string>();
+
+  const download = async (format: "docx" | "pdf") => {
+    if (!protocol || downloading) return;
+    setDownloading(format);
+    setError(undefined);
+    try {
+      const response = await fetch(`/api/asr/jobs/${jobId}/export/${format}`, { cache: "no-store" });
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => ({}));
+        const message = typeof payload === "object" && payload !== null && "error" in payload && typeof payload.error === "string"
+          ? payload.error
+          : "Не удалось сформировать файл.";
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `protocol.${format}`;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Не удалось сформировать файл.");
+    } finally {
+      setDownloading(undefined);
+    }
+  };
+
+  if (!protocol) {
+    return (
+      <div className="rounded-xl border bg-[rgb(var(--surface-raised))] p-5 text-sm leading-6 text-muted">
+        <p className="font-medium text-[rgb(var(--foreground))]">Сначала сформируйте саммари и поручения</p>
+        <p className="mt-2">Экспорт использует текущие сохранённые правки транскрипта и поручений. DOCX и PDF формируются только на этом компьютере и сразу скачиваются.</p>
+        <Button className="mt-4" size="sm" onClick={onCreate} disabled={analysisState === "loading"}>
+          <ClipboardList className="h-4 w-4" aria-hidden="true" />
+          Сформировать протокол
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border bg-[rgb(var(--surface-raised))] p-5">
+      <p className="font-medium">Скачать протокол</p>
+      <p className="mt-2 text-sm leading-6 text-muted">В файл войдут тема, дата формирования, участники, полный транскрипт, саммари и таблица поручений. Файл создаётся локально и не сохраняется сервисом после скачивания.</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button size="sm" onClick={() => void download("docx")} disabled={Boolean(downloading)}>
+          <Download className="h-4 w-4" aria-hidden="true" />
+          {downloading === "docx" ? "Готовим DOCX…" : "Скачать DOCX"}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={() => void download("pdf")} disabled={Boolean(downloading)}>
+          <Download className="h-4 w-4" aria-hidden="true" />
+          {downloading === "pdf" ? "Готовим PDF…" : "Скачать PDF"}
+        </Button>
+      </div>
+      {error ? <p className="mt-3 text-sm text-rose-700 dark:text-rose-300">{error}</p> : null}
+    </div>
+  );
+}
+
 export function ProcessingResult({ jobId }: { jobId: string }) {
   const [result, setResult] = useState<TranscriptionResult>();
   const [tab, setTab] = useState<Tab>("transcript");
@@ -419,30 +494,34 @@ export function ProcessingResult({ jobId }: { jobId: string }) {
   }
 
   return (
-    <section className="mt-6 rounded-2xl border surface p-5 shadow-sm sm:p-6">
+    <section className="mt-8 border-t pt-8" aria-labelledby="result-title">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-accent">Результат обработки</p>
-          <h2 className="mt-1 text-xl font-semibold">Расшифровка готова</h2>
-          <p className="mt-2 text-sm text-muted">{result.segments.length} сегм. · результат сохранён только в локальном хранилище этого компьютера.</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Шаг 02 / 03</p>
+          <h2 id="result-title" className="mt-2 text-2xl font-semibold tracking-[-0.04em]">Расшифровка готова</h2>
+          <p className="mt-2 text-sm leading-6 text-muted">{result.segments.length} сегментов · результат хранится на этом компьютере.</p>
         </div>
       </div>
 
-      <div className="mt-5 flex flex-wrap gap-2 border-b pb-4" role="tablist" aria-label="Разделы результата">
-        <Button role="tab" aria-selected={tab === "transcript"} variant={tab === "transcript" ? "primary" : "secondary"} size="sm" onClick={() => setTab("transcript")}>
+      <div className="mt-6 flex flex-wrap gap-2 border-b pb-3" role="tablist" aria-label="Разделы результата">
+        <Button role="tab" aria-selected={tab === "transcript"} variant={tab === "transcript" ? "primary" : "ghost"} size="sm" onClick={() => setTab("transcript")}>
           <MessageSquareText className="h-4 w-4" aria-hidden="true" /> Транскрипт
         </Button>
-        <Button role="tab" aria-selected={tab === "summary"} variant={tab === "summary" ? "primary" : "secondary"} size="sm" onClick={() => setTab("summary")}>
+        <Button role="tab" aria-selected={tab === "summary"} variant={tab === "summary" ? "primary" : "ghost"} size="sm" onClick={() => setTab("summary")}>
           <FileText className="h-4 w-4" aria-hidden="true" /> Саммари
         </Button>
-        <Button role="tab" aria-selected={tab === "actions"} variant={tab === "actions" ? "primary" : "secondary"} size="sm" onClick={() => setTab("actions")}>
+        <Button role="tab" aria-selected={tab === "actions"} variant={tab === "actions" ? "primary" : "ghost"} size="sm" onClick={() => setTab("actions")}>
           <ClipboardList className="h-4 w-4" aria-hidden="true" /> Поручения
+        </Button>
+        <Button role="tab" aria-selected={tab === "export"} variant={tab === "export" ? "primary" : "ghost"} size="sm" onClick={() => setTab("export")}>
+          <Download className="h-4 w-4" aria-hidden="true" /> Экспорт
         </Button>
       </div>
 
       <div className="mt-5" role="tabpanel">
         {tab === "summary" ? <AnalysisPanel type="summary" protocol={protocol} state={analysisState} error={analysisError} onCreate={() => void createAnalysis()} onOpenSource={openSource} jobId={jobId} onActionUpdated={updateAction} /> : null}
         {tab === "actions" ? <AnalysisPanel type="actions" protocol={protocol} state={analysisState} error={analysisError} onCreate={() => void createAnalysis()} onOpenSource={openSource} jobId={jobId} onActionUpdated={updateAction} /> : null}
+        {tab === "export" ? <ExportPanel jobId={jobId} protocol={protocol} analysisState={analysisState} onCreate={() => void createAnalysis()} /> : null}
         {tab === "transcript" ? (
           <>
             {result.speakers.length ? (

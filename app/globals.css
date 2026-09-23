@@ -3,41 +3,36 @@
 @tailwind utilities;
 
 :root {
-  --background: 244 247 251;
-  --foreground: 17 24 39;
-  --muted: 99 115 139;
+  --background: 247 248 246;
+  --foreground: 26 37 36;
+  --muted: 108 119 117;
   --surface: 255 255 255;
-  --surface-raised: 248 250 252;
-  --border: 219 227 237;
-  --accent: 14 116 144;
-  --accent-strong: 12 87 108;
-  --accent-soft: 224 242 254;
+  --surface-raised: 249 250 248;
+  --border: 222 228 224;
+  --accent: 24 110 91;
+  --accent-strong: 16 80 67;
+  --accent-soft: 229 244 238;
   --danger: 190 24 93;
   color-scheme: light;
 }
 
 .dark {
-  --background: 10 16 27;
-  --foreground: 240 246 252;
-  --muted: 148 163 184;
-  --surface: 17 27 43;
-  --surface-raised: 22 34 53;
-  --border: 46 61 82;
-  --accent: 103 232 249;
-  --accent-strong: 165 243 252;
-  --accent-soft: 20 47 63;
+  --background: 17 25 24;
+  --foreground: 240 245 241;
+  --muted: 161 174 169;
+  --surface: 26 36 34;
+  --surface-raised: 32 44 41;
+  --border: 57 72 67;
+  --accent: 130 216 181;
+  --accent-strong: 174 236 207;
+  --accent-soft: 28 65 52;
   --danger: 251 113 133;
   color-scheme: dark;
 }
 
-* {
-  border-color: rgb(var(--border));
-}
+* { border-color: rgb(var(--border)); }
 
-html {
-  min-width: 320px;
-  background: rgb(var(--background));
-}
+html { min-width: 320px; background: rgb(var(--background)); scroll-behavior: smooth; }
 
 body {
   min-height: 100vh;
@@ -47,37 +42,20 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-::selection {
-  background: rgb(var(--accent-soft));
-  color: rgb(var(--foreground));
+.app-shell {
+  background: radial-gradient(circle at 8% 1%, rgb(226 242 233 / 0.55), transparent 27rem), rgb(var(--background));
 }
 
+.brand-mark { color: white; background: rgb(var(--accent)); }
+
+::selection { background: rgb(var(--accent-soft)); color: rgb(var(--foreground)); }
+
 @layer utilities {
-  .surface {
-    background: rgb(var(--surface));
-  }
-
-  .surface-raised {
-    background: rgb(var(--surface-raised));
-  }
-
-  .text-muted {
-    color: rgb(var(--muted));
-  }
-
-  .text-accent {
-    color: rgb(var(--accent));
-  }
-
-  .bg-accent {
-    background: rgb(var(--accent));
-  }
-
-  .bg-accent-soft {
-    background: rgb(var(--accent-soft));
-  }
-
-  .ring-accent {
-    --tw-ring-color: rgb(var(--accent));
-  }
+  .surface { background: rgb(var(--surface)); }
+  .surface-raised { background: rgb(var(--surface-raised)); }
+  .text-muted { color: rgb(var(--muted)); }
+  .text-accent { color: rgb(var(--accent)); }
+  .bg-accent { background: rgb(var(--accent)); }
+  .bg-accent-soft { background: rgb(var(--accent-soft)); }
+  .ring-accent { --tw-ring-color: rgb(var(--accent)); }
 }

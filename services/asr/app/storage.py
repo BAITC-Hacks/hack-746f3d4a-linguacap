@@ -67,7 +67,13 @@ class LocalProtocolStore:
     def delete(self, job_id: str) -> bool:
         with self._connect() as connection:
             deleted = connection.execute("DELETE FROM completed_jobs WHERE job_id = ?", (job_id,))
-        return deleted.rowcount == 1
+        if deleted.rowcount != 1:
+            return False
+        # Keep removed transcript text out of free SQLite pages.  This is a
+        # best-effort local cleanup, not a claim about filesystem snapshots.
+        with self._connect() as connection:
+            connection.execute("VACUUM")
+        return True
 
     def _load_json(self, job_id: str, column: str) -> dict[str, Any] | None:
         with self._connect() as connection:
@@ -80,7 +86,9 @@ class LocalProtocolStore:
         return value
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._database_path)
+        connection = sqlite3.connect(self._database_path)
+        connection.execute("PRAGMA secure_delete = ON")
+        return connection
 
     @staticmethod
     def _serialize(value: Mapping[str, Any]) -> str:

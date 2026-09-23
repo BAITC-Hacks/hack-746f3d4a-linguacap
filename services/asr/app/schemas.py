@@ -12,7 +12,7 @@ JobStage = Literal["queued", "preparing", "diarizing", "transcribing", "complete
 
 
 class ModelStatus(BaseModel):
-    state: Literal["available", "not_downloaded"]
+    state: Literal["available", "not_downloaded", "disabled", "unavailable"]
     path: str
 
 
@@ -27,6 +27,11 @@ class HealthResponse(BaseModel):
     service: Literal["local-asr"]
     device: DeviceStatus
     ffmpeg: Literal["available", "not_found"]
+    ffprobe: Literal["available", "not_found"]
+    dependencies: dict[str, Literal["available", "not_found"]]
+    ready: dict[str, bool]
+    startup_error: str | None = None
+    analysis_model: str | None = None
     models: dict[str, ModelStatus]
 
 

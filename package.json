@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack --hostname 127.0.0.1",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --webpack --hostname 127.0.0.1",
     "dev:asr": "cd services/asr && ./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload",
     "dev:asr:full": "cd services/asr && ./.venv-nemo/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload",
-    "build": "next build --webpack",
-    "start": "next start --hostname 127.0.0.1",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build --webpack",
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start --hostname 127.0.0.1",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

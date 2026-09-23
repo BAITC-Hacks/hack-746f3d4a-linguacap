@@ -1,5 +1,6 @@
 import math
 import wave
+from io import BytesIO
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -169,6 +170,30 @@ def test_diarization_speaker_is_attached_and_can_be_renamed(tmp_path: Path):
     manager.shutdown()
 
 
+def test_job_logs_exclude_transcript_text(tmp_path: Path, monkeypatch):
+    messages: list[str] = []
+
+    def capture(message: str, *args: object) -> None:
+        messages.append(message % args)
+
+    monkeypatch.setattr("app.jobs.logger.info", capture)
+    settings = job_settings(tmp_path)
+    manager = TranscriptionJobManager(settings, FakeTranscriber())
+    job = manager.create()
+    source = job.workspace / "source.wav"
+    write_speech_like_wav(source)
+
+    manager.submit(job.job_id, source)
+    assert job.future is not None
+    job.future.result(timeout=10)
+
+    log_text = "\n".join(messages)
+    assert job.job_id in log_text
+    assert "тестовая расшифровка" not in log_text
+    manager.delete(job.job_id)
+    manager.shutdown()
+
+
 def test_completed_transcript_can_be_analyzed_with_source_segment_links(tmp_path: Path):
     settings = job_settings(tmp_path)
     manager = TranscriptionJobManager(settings, FakeTranscriber(), FakeDiarizer(), FakeAnalyzer())
@@ -219,6 +244,31 @@ def test_completed_result_and_user_edits_survive_a_manager_restart(tmp_path: Pat
     restarted_manager.shutdown()
 
 
+def test_local_storage_uses_secure_delete_and_removes_a_completed_snapshot(tmp_path: Path):
+    import sqlite3
+
+    settings = job_settings(tmp_path)
+    manager = TranscriptionJobManager(settings, FakeTranscriber(), FakeDiarizer())
+    job = manager.create()
+    source = job.workspace / "source.wav"
+    write_speech_like_wav(source)
+
+    manager.submit(job.job_id, source)
+    assert job.future is not None
+    job.future.result(timeout=10)
+    assert manager.delete(job.job_id)
+    manager.shutdown()
+
+    with sqlite3.connect(settings.protocol_store_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM completed_jobs WHERE job_id = ?", (job.job_id,)).fetchone() == (0,)
+
+    from app.storage import LocalProtocolStore
+
+    with LocalProtocolStore(settings.protocol_store_path)._connect() as connection:
+        # secure_delete is intentionally enabled on every storage connection.
+        assert connection.execute("PRAGMA secure_delete").fetchone() == (1,)
+
+
 def test_analysis_api_returns_only_validated_protocol_data(tmp_path: Path):
     settings = job_settings(tmp_path)
     source = tmp_path / "meeting.wav"
@@ -248,6 +298,50 @@ def test_analysis_api_returns_only_validated_protocol_data(tmp_path: Path):
         assert regenerated.status_code == 200
         assert edited_action.status_code == 200
         assert edited_action.json()["assignee"] == "Алия"
+
+    app.state.jobs.shutdown()
+
+
+def test_exports_contain_the_current_transcript_and_protocol(tmp_path: Path):
+    from docx import Document
+
+    settings = job_settings(tmp_path)
+    source = tmp_path / "meeting.wav"
+    write_speech_like_wav(source)
+    app = create_app(settings, FakeTranscriber(), FakeDiarizer(), FakeAnalyzer())
+
+    with TestClient(app) as client, source.open("rb") as audio_file:
+        created = client.post("/transcribe", files={"file": ("meeting.wav", audio_file, "audio/wav")})
+        job_id = created.json()["id"]
+        app.state.jobs.get(job_id).future.result(timeout=10)
+        edited_segment = client.put(f"/jobs/{job_id}/segments/chunk-0001", json={"text": "Қазақша өңделген реплика"})
+        assert edited_segment.status_code == 200
+        assert client.post(f"/jobs/{job_id}/analysis").status_code == 200
+        edited_action = client.put(
+            f"/jobs/{job_id}/actions/0",
+            json={"description": "Қазақша міндет", "assignee": "Әлия", "deadline_text": "ертең", "deadline": None},
+        )
+        assert edited_action.status_code == 200
+
+        docx_export = client.get(f"/jobs/{job_id}/export/docx")
+        assert docx_export.status_code == 200
+        assert docx_export.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        assert docx_export.headers["content-disposition"].endswith(f"protocol-{job_id[:8]}.docx\"")
+        document = Document(BytesIO(docx_export.content))
+        document_text = "\n".join(
+            [paragraph.text for paragraph in document.paragraphs]
+            + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+        )
+        assert "Қазақша өңделген реплика" in document_text
+        assert "Қазақша міндет" in document_text
+        assert "Әлия" in document_text
+        assert "Ответственный" in document_text
+
+        pdf_export = client.get(f"/jobs/{job_id}/export/pdf")
+        assert pdf_export.status_code == 200
+        assert pdf_export.headers["content-type"].startswith("application/pdf")
+        assert pdf_export.content.startswith(b"%PDF-")
+        assert len(pdf_export.content) > 1_000
 
     app.state.jobs.shutdown()
 

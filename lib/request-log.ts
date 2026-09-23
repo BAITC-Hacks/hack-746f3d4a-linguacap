@@ -20,6 +20,23 @@ export function startRequestLog(route: string): RequestLog {
 }
 
 export function jsonWithRequestLog<T>(requestLog: RequestLog, payload: T, { outcome, status = 200 }: ResponseOptions) {
+  writeRequestLog(requestLog, outcome, status);
+  return Response.json(payload, {
+    status,
+    headers: {
+      "X-Request-Id": requestLog.requestId,
+    },
+  });
+}
+
+export function fileWithRequestLog(requestLog: RequestLog, body: BodyInit | null, headers: HeadersInit, status = 200) {
+  writeRequestLog(requestLog, "success", status);
+  const responseHeaders = new Headers(headers);
+  responseHeaders.set("X-Request-Id", requestLog.requestId);
+  return new Response(body, { status, headers: responseHeaders });
+}
+
+function writeRequestLog(requestLog: RequestLog, outcome: LogOutcome, status: number) {
   const durationMs = Math.round(performance.now() - requestLog.startedAt);
   const entry = JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -37,11 +54,4 @@ export function jsonWithRequestLog<T>(requestLog: RequestLog, payload: T, { outc
   } else {
     console.warn(entry);
   }
-
-  return Response.json(payload, {
-    status,
-    headers: {
-      "X-Request-Id": requestLog.requestId,
-    },
-  });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, CheckCircle2, FileAudio, LoaderCircle, ShieldCheck, Upload } from "lucide-react";
+import { AlertCircle, ArrowRight, CheckCircle2, FileAudio, LoaderCircle, UploadCloud, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -102,6 +102,7 @@ export function RecordingUpload() {
   const [stage, setStage] = useState<JobStage>();
   const [progressPercent, setProgressPercent] = useState(0);
   const [events, setEvents] = useState<JobEvent[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
 
   const updateJobState = useCallback((next: JobResponse) => {
     if (next.status === "queued" || next.status === "processing" || next.status === "completed" || next.status === "failed" || next.status === "deleting") {
@@ -186,6 +187,7 @@ export function RecordingUpload() {
   }, [jobId, status, updateJobState]);
 
   const selectFile = (nextFile: File | undefined) => {
+    if (inputRef.current) inputRef.current.value = "";
     setError(undefined);
     setJobId(undefined);
     setStatus("idle");
@@ -210,8 +212,18 @@ export function RecordingUpload() {
   const upload = async () => {
     if (!file || !hasConsent) return;
     setError(undefined);
-    setStatus("queued");
+    let submitted = false;
     try {
+      const healthResponse = await fetch("/api/asr/health", { cache: "no-store" });
+      const healthPayload: unknown = await healthResponse.json().catch(() => ({}));
+      if (!healthResponse.ok) throw new Error("Локальный ASR-сервис недоступен. Проверьте его состояние справа.");
+      if (typeof healthPayload === "object" && healthPayload !== null && "ready" in healthPayload
+        && typeof healthPayload.ready === "object" && healthPayload.ready !== null
+        && "transcription" in healthPayload.ready && healthPayload.ready.transcription === false) {
+        throw new Error("Для расшифровки не хватает обязательных компонентов. Откройте подсказки в блоке «Состояние сервиса».");
+      }
+      setStatus("queued");
+      submitted = true;
       const formData = new FormData();
       formData.set("file", file);
       const response = await fetch("/api/asr/transcribe", { method: "POST", body: formData });
@@ -223,7 +235,7 @@ export function RecordingUpload() {
       setJobId(result.id);
       updateJobState(result);
     } catch (caughtError) {
-      setStatus("failed");
+      setStatus(submitted ? "failed" : "idle");
       setError(caughtError instanceof Error ? caughtError.message : "Не удалось запустить обработку.");
     }
   };
@@ -231,27 +243,24 @@ export function RecordingUpload() {
   const active = status === "queued" || status === "processing";
 
   return (
-    <section className="rounded-2xl border surface p-5 shadow-sm sm:p-6" aria-live="polite">
+    <section className="rounded-[28px] border surface p-5 shadow-[0_20px_70px_-50px_rgba(19,61,45,0.28)] sm:p-8" aria-live="polite" aria-labelledby="upload-title">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-accent">Новая запись</p>
-          <h2 className="mt-1 text-xl font-semibold">Загрузить совещание</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">
-            Файл остаётся на этом компьютере: браузер передаст его только в локальный сервис обработки.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 rounded-full bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent">
-          <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-          Локальный контур
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Шаг 01 / 03</p>
+          <h2 id="upload-title" className="mt-2 text-2xl font-semibold tracking-[-0.04em] sm:text-[28px]">Добавьте запись встречи</h2>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-muted">Выберите аудио или видео. Файл передаётся только локальному сервису на этом компьютере.</p>
         </div>
       </div>
 
       <label
-        className="mt-5 flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed bg-[rgb(var(--surface-raised))] px-5 text-center transition hover:bg-accent-soft"
+        className={`mt-7 flex min-h-60 cursor-pointer flex-col items-center justify-center rounded-[20px] border-2 border-dashed px-5 text-center transition-colors focus-within:border-[rgb(var(--accent))] focus-within:ring-2 focus-within:ring-accent ${isDragging ? "border-[rgb(var(--accent))] bg-accent-soft" : "border-[rgb(var(--border))] bg-[rgb(var(--surface-raised))] hover:border-[rgb(var(--accent))] hover:bg-accent-soft"} ${active ? "pointer-events-none opacity-60" : ""}`}
+        onDragEnter={(event) => { event.preventDefault(); setIsDragging(true); }}
+        onDragLeave={(event) => { event.preventDefault(); setIsDragging(false); }}
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => {
           event.preventDefault();
-          selectFile(event.dataTransfer.files.item(0) ?? undefined);
+          setIsDragging(false);
+          if (!active) selectFile(event.dataTransfer.files.item(0) ?? undefined);
         }}
       >
         <input
@@ -260,16 +269,20 @@ export function RecordingUpload() {
           type="file"
           accept="audio/mpeg,audio/wav,audio/mp4,video/mp4,.mp3,.wav,.m4a,.mp4"
           onChange={(event) => selectFile(event.target.files?.item(0) ?? undefined)}
+          disabled={active}
         />
-        <Upload className="h-7 w-7 text-accent" aria-hidden="true" />
-        <span className="mt-3 font-medium">Перетащите запись сюда или выберите файл</span>
-        <span className="mt-1 text-sm text-muted">MP3, WAV, M4A или MP4 · до 1 GiB</span>
+        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-accent shadow-sm dark:bg-[rgb(var(--surface))]">
+          <UploadCloud className="h-6 w-6" strokeWidth={1.8} aria-hidden="true" />
+        </span>
+        <span className="mt-5 text-base font-semibold">Перетащите файл сюда</span>
+        <span className="mt-1 text-sm text-muted">или <span className="font-semibold text-accent underline underline-offset-4">выберите на компьютере</span></span>
+        <span className="mt-5 text-xs text-muted">MP3, WAV, M4A, MP4 · до 1 ГиБ</span>
       </label>
 
       {file ? (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-[rgb(var(--surface-raised))] p-4">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-[rgb(var(--surface-raised))] p-4">
           <div className="flex min-w-0 items-center gap-3">
-            <FileAudio className="h-5 w-5 shrink-0 text-accent" aria-hidden="true" />
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-soft"><FileAudio className="h-5 w-5 text-accent" aria-hidden="true" /></span>
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">{file.name}</p>
               <p className="mt-1 text-xs text-muted">
@@ -287,12 +300,12 @@ export function RecordingUpload() {
               selectFile(undefined);
             }}
           >
-            Убрать
+            <X className="h-4 w-4" aria-hidden="true" /> Убрать
           </Button>
         </div>
       ) : null}
 
-      <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl bg-[rgb(var(--surface-raised))] p-4 text-sm leading-5">
+      <label className="mt-5 flex cursor-pointer items-start gap-3 text-sm leading-6">
         <input
           className="mt-0.5 h-4 w-4 rounded border-[rgb(var(--border))] text-[rgb(var(--accent))]"
           type="checkbox"
@@ -300,16 +313,17 @@ export function RecordingUpload() {
           onChange={(event) => setHasConsent(event.target.checked)}
           disabled={active}
         />
-        <span>Подтверждаю, что участники совещания уведомлены о записи и обработке.</span>
+        <span className="text-muted">Подтверждаю, что участники уведомлены о записи и обработке.</span>
       </label>
 
-      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-sm text-muted">
+      <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t pt-6">
+        <div className="flex items-center gap-2 text-xs text-muted">
           {active ? <LoaderCircle className="h-4 w-4 animate-spin text-accent" aria-hidden="true" /> : status === "completed" ? <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" /> : null}
           <span>{statusCopy(status, stage)}</span>
         </div>
-        <Button onClick={() => void upload()} disabled={!file || !hasConsent || active}>
+        <Button className="w-full sm:w-auto sm:min-w-52" onClick={() => void upload()} disabled={!file || !hasConsent || active}>
           {active ? "Обрабатываем…" : "Начать обработку"}
+          {!active ? <ArrowRight className="h-4 w-4" aria-hidden="true" /> : null}
         </Button>
       </div>
 
@@ -329,9 +343,9 @@ export function RecordingUpload() {
           >
             <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${progressPercent}%` }} />
           </div>
-          <div className="mt-4 border-t pt-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted">Журнал обработки</p>
-            <ol className="mt-2 space-y-2 text-sm">
+          <details className="mt-4 border-t pt-3">
+            <summary className="cursor-pointer text-xs font-medium text-muted">Подробности обработки</summary>
+            <ol className="mt-3 space-y-2 text-sm">
               {events.map((event, index) => (
                 <li key={`${event.stage}-${event.progress_percent}-${index}`} className="flex gap-3 text-muted">
                   <span className="w-9 shrink-0 text-right font-medium text-accent">{event.progress_percent}%</span>
@@ -339,7 +353,7 @@ export function RecordingUpload() {
                 </li>
               ))}
             </ol>
-          </div>
+          </details>
         </div>
       ) : null}
 

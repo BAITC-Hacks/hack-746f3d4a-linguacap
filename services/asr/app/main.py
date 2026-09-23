@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
+import json
+from importlib.util import find_spec
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,8 +24,9 @@ from app.analysis import (
 )
 from app.audio import AudioProcessingError, AudioValidationError, cleanup_workspace, create_workspace, extension_for_upload, prepare_audio, store_upload
 from app.config import Settings, get_settings
-from app.diarization import LocalPyannoteDiarizer
+from app.diarization import LocalPyannoteDiarizer, PYANNOTE_CONFIG_FILENAME, PYANNOTE_MODEL_DIRECTORY
 from app.jobs import Diarizer, Job, JobNotFoundError, Transcriber, TranscriptionJobManager
+from app.protocol_export import ProtocolExportError, create_protocol_export
 from app.schemas import (
     ActionItemResponse,
     AudioPreparationResponse,
@@ -39,16 +46,30 @@ from app.schemas import (
     UpdateTranscriptSegmentRequest,
 )
 from app.transcription import LocalRukkTranscriber, TranscriptionError
+from app.nemo_transcription import NEMO_FILENAME
+
+logger = logging.getLogger("uvicorn.error")
 
 
-def _model_status(path: str) -> ModelStatus:
-    from pathlib import Path
-
-    model_path = Path(path)
+def _model_status(path: Path, *required_files: str) -> ModelStatus:
     return ModelStatus(
-        state="available" if model_path.is_dir() and any(model_path.iterdir()) else "not_downloaded",
-        path=str(model_path),
+        state="available" if all((path / filename).is_file() for filename in required_files) else "not_downloaded",
+        path=str(path),
     )
+
+
+def _ollama_model_status(settings: Settings) -> ModelStatus:
+    if settings.local_llm_provider != "ollama" or not settings.local_llm_model:
+        return ModelStatus(state="disabled", path=str(settings.llm_model_dir))
+    try:
+        with urlopen(f"{settings.local_llm_base_url.rstrip('/')}/api/tags", timeout=1) as response:  # noqa: S310 -- URL is validated as loopback in Settings.
+            payload = json.load(response)
+        models = payload.get("models", []) if isinstance(payload, dict) else []
+        names = {entry.get("name") for entry in models if isinstance(entry, dict)}
+        state = "available" if settings.local_llm_model in names else "not_downloaded"
+    except (OSError, URLError, ValueError, TypeError):
+        state = "unavailable"
+    return ModelStatus(state=state, path=str(settings.llm_model_dir))
 
 
 def _job_response(job: Job) -> JobResponse:
@@ -103,6 +124,23 @@ def create_app(
 
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
+        ffmpeg_available = shutil.which(configured_settings.ffmpeg_binary) is not None
+        ffprobe_available = shutil.which(configured_settings.ffprobe_binary) is not None
+        dependencies = {
+            name: "available" if find_spec(module) is not None else "not_found"
+            for name, module in (
+                ("torch", "torch"), ("pyannote", "pyannote"), ("nemo", "nemo"),
+                ("docx", "docx"), ("reportlab", "reportlab"),
+            )
+        }
+        models = {
+            "asr_rukk": _model_status(configured_settings.rukk_model_dir, "model.pt", "tokens.lst"),
+            "asr_nemo": _model_status(configured_settings.nemo_model_dir, NEMO_FILENAME),
+            "diarization": _model_status(
+                configured_settings.diarization_model_dir / PYANNOTE_MODEL_DIRECTORY, PYANNOTE_CONFIG_FILENAME
+            ),
+            "llm": _ollama_model_status(configured_settings),
+        }
         return HealthResponse(
             status="ok",
             service="local-asr",
@@ -111,13 +149,19 @@ def create_app(
                 selected=configured_settings.selected_device,
                 fallback_reason=configured_settings.device_fallback_reason,
             ),
-            ffmpeg="available" if shutil.which(configured_settings.ffmpeg_binary) else "not_found",
-            models={
-                "asr_rukk": _model_status(str(configured_settings.rukk_model_dir)),
-                "asr_nemo": _model_status(str(configured_settings.nemo_model_dir)),
-                "diarization": _model_status(str(configured_settings.diarization_model_dir)),
-                "llm": _model_status(str(configured_settings.llm_model_dir)),
+            ffmpeg="available" if ffmpeg_available else "not_found",
+            ffprobe="available" if ffprobe_available else "not_found",
+            dependencies=dependencies,
+            ready={
+                "transcription": ffmpeg_available and ffprobe_available and dependencies["torch"] == "available"
+                and models["asr_rukk"].state == "available" and app.state.asr_startup_error is None,
+                "diarization": dependencies["pyannote"] == "available" and models["diarization"].state == "available",
+                "analysis": models["llm"].state == "available",
+                "export": dependencies["docx"] == "available" and dependencies["reportlab"] == "available",
             },
+            startup_error=app.state.asr_startup_error,
+            analysis_model=configured_settings.local_llm_model,
+            models=models,
         )
 
     @app.post("/prepare-audio", response_model=AudioPreparationResponse, tags=["audio"])
@@ -282,6 +326,25 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return _action_response(action)
+
+    @app.get("/jobs/{job_id}/export/{export_format}", tags=["export"])
+    def export_protocol(job_id: str, export_format: str) -> Response:
+        if export_format not in {"docx", "pdf"}:
+            raise HTTPException(status_code=400, detail="Поддерживаются только форматы DOCX и PDF.")
+        try:
+            result = app.state.jobs.result_for(job_id)
+            protocol = app.state.jobs.analysis_for(job_id)
+            content = create_protocol_export(export_format, result, protocol)
+        except JobNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Задание не найдено.") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail="Сначала сформируйте саммари и поручения.") from error
+        except ProtocolExportError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if export_format == "docx" else "application/pdf"
+        filename = f"protocol-{job_id[:8]}.{export_format}"
+        logger.info("asr_protocol_exported id=%s format=%s", job_id, export_format)
+        return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     @app.delete("/jobs/{job_id}", status_code=204, tags=["transcription"])
     def delete_job(job_id: str) -> Response:

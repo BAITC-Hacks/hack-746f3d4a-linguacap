@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 import warnings
 import wave
@@ -38,7 +39,7 @@ class LocalPyannoteDiarizer:
 
     @property
     def is_installed(self) -> bool:
-        return (self.model_path / PYANNOTE_CONFIG_FILENAME).is_file()
+        return (self.model_path / PYANNOTE_CONFIG_FILENAME).is_file() and find_spec("pyannote") is not None
 
     def _load(self) -> None:
         if self._pipeline is not None:
